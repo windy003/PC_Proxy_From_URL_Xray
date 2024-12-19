@@ -8,6 +8,9 @@ import requests
 import zipfile
 from urllib.parse import urlparse, unquote
 import socket
+import base64
+import re
+from typing import List, Dict
 
 class XrayProxy:
     def __init__(self, http_port=10809, socks_port=10808):
@@ -45,7 +48,7 @@ class XrayProxy:
                 zip_ref.extract("xray.exe", app_dir)
             
             os.remove(zip_path)
-            print("Xray 下载完���")
+            print("Xray 下载完成")
             return xray_exe
             
         except Exception as e:
@@ -271,6 +274,84 @@ class XrayProxy:
             os.remove(self.config_path)
             
         print("代理服务已停止")
+
+def fetch_and_decode_trojan_links(url: str) -> List[Dict]:
+    """
+    获取并解析trojan链接
+    """
+    # 移除URL开头的@符号（如果存在）
+    url = url.lstrip('@')
+    
+    try:
+        # 获取内容
+        response = requests.get(url)
+        # Base64解码
+        decoded_content = base64.b64decode(response.text).decode('utf-8')
+        # 分割每个trojan链接
+        trojan_links = [line for line in decoded_content.split('\n') if line.strip()]
+        
+        # 解析结果列表
+        parsed_links = []
+        
+        for i, link in enumerate(trojan_links, 1):
+            # 提取链接中的信息
+            match = re.search(r'trojan://([^@]+)@([^:]+):(\d+)', link)
+            if match:
+                password, host, port = match.groups()
+                
+                # 提取备注信息（如果有）
+                name_match = re.search(r'#(.+)$', link)
+                name = name_match.group(1) if name_match else f"节点 {i}"
+                
+                parsed_links.append({
+                    'index': i,
+                    'name': name,
+                    'host': host,
+                    'port': port,
+                    'full_link': link
+                })
+        
+        return parsed_links
+        
+    except Exception as e:
+        print(f"错误: {str(e)}")
+        return []
+
+def select_and_connect_trojan(url: str):
+    """
+    显示所有节点并选择连接
+    """
+    links = fetch_and_decode_trojan_links(url)
+    
+    if not links:
+        print("未找到有效的trojan链接")
+        return
+    
+    # 显示所有节点
+    print("\n可用节点列表:")
+    print("-" * 50)
+    for link in links:
+        print(f"{link['index']}. {link['name']}")
+        print(f"   服务器: {link['host']}:{link['port']}")
+        print("-" * 50)
+    
+    # 选择节点
+    while True:
+        try:
+            choice = int(input("\n请选择要连接的节点编号: "))
+            if 1 <= choice <= len(links):
+                selected = links[choice-1]
+                print(f"\n已选择: {selected['name']}")
+                
+                # 创建代理实例并连接
+                proxy = XrayProxy()  # 使用你之前的XrayProxy类
+                proxy.start_proxy(selected['full_link'])
+                
+                return
+            else:
+                print("无效的节点编号，请重新选择")
+        except ValueError:
+            print("请输入有效的数字")
 
 def main():
     proxy = XrayProxy()
