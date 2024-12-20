@@ -13,10 +13,6 @@ from PyQt5.QtGui import QIcon
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 import threading
 import time
-import socket
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import select
-import struct
 
 class FetchThread(QThread):
     finished = pyqtSignal(str)
@@ -119,96 +115,6 @@ class FetchThread(QThread):
         except Exception as e:
             self.finished.emit(f"发生错误: {str(e)}")
 
-class HttpToSocks5(BaseHTTPRequestHandler):
-    def do_CONNECT(self):
-        try:
-            host, port = self.path.split(':')
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.connect(('127.0.0.1', 10808))  # 连接到 SOCKS5 代理
-            
-            # SOCKS5 握手
-            sock.send(b'\x05\x01\x00')
-            sock.recv(2)
-            
-            # 发送连接请求
-            addr = host.encode()
-            port = int(port)
-            req = b'\x05\x01\x00\x03' + bytes([len(addr)]) + addr + struct.pack('>H', port)
-            sock.send(req)
-            sock.recv(10)
-            
-            self.send_response(200)
-            self.end_headers()
-            
-            conns = [self.connection, sock]
-            while True:
-                r, w, e = select.select(conns, [], [])
-                for s in r:
-                    data = s.recv(4096)
-                    if not data:
-                        return
-                    other = conns[1] if s is conns[0] else conns[0]
-                    other.send(data)
-        except Exception as e:
-            self.send_error(500, str(e))
-            return
-    
-    def do_GET(self):
-        self.handle_request('GET')
-    
-    def do_POST(self):
-        self.handle_request('POST')
-    
-    def handle_request(self, method):
-        try:
-            url = self.path
-            headers = {k: v for k, v in self.headers.items()}
-            
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.connect(('127.0.0.1', 10808))
-            
-            # SOCKS5 握手
-            sock.send(b'\x05\x01\x00')
-            sock.recv(2)
-            
-            # 解析目标地址
-            if url.startswith('http://'):
-                url = url[7:]
-            host = url.split('/')[0]
-            if ':' in host:
-                host, port = host.split(':')
-                port = int(port)
-            else:
-                port = 80
-                
-            # 发送连接请求
-            addr = host.encode()
-            req = b'\x05\x01\x00\x03' + bytes([len(addr)]) + addr + struct.pack('>H', port)
-            sock.send(req)
-            sock.recv(10)
-            
-            # 发送 HTTP 请求
-            request = f'{method} {url} HTTP/1.1\r\n'
-            for k, v in headers.items():
-                request += f'{k}: {v}\r\n'
-            request += '\r\n'
-            
-            sock.send(request.encode())
-            
-            # 接收响应
-            response = sock.recv(4096)
-            self.connection.send(response)
-            
-            while True:
-                data = sock.recv(4096)
-                if not data:
-                    break
-                self.connection.send(data)
-                
-        except Exception as e:
-            self.send_error(500, str(e))
-            return
-
 class ProxyThread(QThread):
     status_update = pyqtSignal(str)
 
@@ -279,7 +185,7 @@ class ProxyThread(QThread):
             with open(config_path, 'w', encoding='utf-8') as f:
                 json.dump(config, f, indent=2)
             
-            self.status_update.emit("配置文件已生成")
+            self.status_update.emit("配置文���已生成")
 
             xray_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'xray.exe')
             if not os.path.exists(xray_path):
@@ -307,7 +213,7 @@ class ProxyThread(QThread):
                                 prefix = "[警告]" if is_error else "[信息]"
                                 self.status_update.emit(f"{prefix} {decoded_line}")
                         except Exception as e:
-                            self.status_update.emit(f"[日志解码错误] {str(e)}")
+                            self.status_update.emit(f"[���志解码错误] {str(e)}")
 
                 stdout_thread = threading.Thread(target=log_reader, args=(self.process.stdout,))
                 stderr_thread = threading.Thread(target=log_reader, args=(self.process.stderr, True))
@@ -448,7 +354,7 @@ class TrojanUrlViewer(QWidget):
         self.node_combo.setMinimumWidth(200)
         layout.addWidget(self.node_combo)
         
-        # 代理控制按钮
+        # 代理��制按钮
         proxy_layout = QHBoxLayout()
         self.start_button = QPushButton('启动代理')
         self.stop_button = QPushButton('停止代理')
@@ -564,7 +470,7 @@ class TrojanUrlViewer(QWidget):
             self.status_label.setText(status_text)
             
         except Exception as e:
-            self.browser.setText(f"启动代理时发生错误: {str(e)}")
+            self.browser.setText(f"启动���理时发生错误: {str(e)}")
             self.start_button.setEnabled(True)
             self.stop_button.setEnabled(False)
 
