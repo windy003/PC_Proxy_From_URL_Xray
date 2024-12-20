@@ -1,282 +1,461 @@
 import base64
-import requests
-import re
-import json
-import os
-import subprocess
 import sys
-import time
-from urllib.parse import unquote
-from pathlib import Path
+import json
+import requests
+import subprocess
+import os
+from urllib.parse import unquote, urlparse, parse_qs
+from PyQt5.QtWidgets import (QApplication, QSystemTrayIcon, QMenu, QWidget, 
+                           QTextBrowser, QLineEdit, QPushButton, QComboBox,
+                           QLabel, QVBoxLayout, QHBoxLayout, QMessageBox,
+                           QStyle)
+from PyQt5.QtGui import QIcon
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
 
-class XrayProxy:
-    def __init__(self):
-        self.process = None
-        self.config_path = "config.json"
-        self.xray_path = self.get_xray_path()
+class FetchThread(QThread):
+    finished = pyqtSignal(str)
+    progress = pyqtSignal(str)
 
-    def get_xray_path(self):
-        """获取xray.exe的路径"""
-        # 检查用户目录下的.xray-proxy文件夹
-        user_xray_path = Path.home() / '.xray-proxy' / 'xray.exe'
-        if user_xray_path.exists():
-            return str(user_xray_path)
-        
-        # 检查当前目录
-        if Path('./xray.exe').exists():
-            return './xray.exe'
-        
-        raise Exception("找不到xray.exe，请确保它存在于 C:\\Users\\[用户名]\\.xray-proxy 目录下")
+    def __init__(self, url):
+        super().__init__()
+        self.url = url
+        self.nodes = []
+        self._is_running = True
 
-    def create_config(self, trojan_info):
-        """创建Xray配置文件"""
-        # 在.xray-proxy目录下创建配置文件
-        config_dir = Path.home() / '.xray-proxy'
-        config_dir.mkdir(exist_ok=True)
-        self.config_path = str(config_dir / 'config.json')
+    def stop(self):
+        self._is_running = False
 
-        config = {
-            "inbounds": [{
-                "port": 10808,
-                "protocol": "socks",
-                "settings": {
-                    "auth": "noauth",
-                    "udp": True
-                }
-            }],
-            "outbounds": [{
-                "protocol": "trojan",
-                "settings": {
-                    "servers": [{
-                        "address": trojan_info['server'],
-                        "port": int(trojan_info['port']),
-                        "password": trojan_info['password']
-                    }]
-                },
-                "streamSettings": {
-                    "network": "tcp",
-                    "security": "tls",
-                    "tlsSettings": {
-                        "allowInsecure": True,
-                        "serverName": trojan_info['params'].get('sni', trojan_info['server'])
-                    }
-                }
-            }]
-        }
-        
-        with open(self.config_path, 'w') as f:
-            json.dump(config, f, indent=2)
-        print(f"配置文件已创建: {self.config_path}")
+    def get_node_location(self, ip):
+        # 直接返回未知位置，不进行网络请求
+        return "未知位置"
+        # 如果后续需要查询位置，可以使用异步方式或缓存机制
 
-    def start_proxy(self):
-        """启动Xray代理"""
+    def parse_nodes(self, base64_content):
         try:
-            print(f"使用Xray路径: {self.xray_path}")
-            print(f"使用配置文件: {self.config_path}")
+            decoded = base64.b64decode(base64_content).decode('utf-8')
+            urls = decoded.split('\n')
             
-            self.process = subprocess.Popen(
-                [self.xray_path, "-config", self.config_path],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
+            result = ""
+            self.nodes = []
+            
+            for url in urls:
+                if not self._is_running:
+                    return "操作已取消"
+
+                url = url.strip()
+                if not url or not url.startswith('trojan://'):
+                    continue
+                    
+                try:
+                    # 解析URL
+                    parsed = urlparse(url)
+                    userinfo, server = parsed.netloc.split('@')
+                    host, port = server.split(':')
+                    
+                    # 获取备注名称
+                    remark = unquote(parsed.fragment) if parsed.fragment else "未命名节点"
+                    
+                    # 获取其他参数
+                    query_params = parse_qs(parsed.query)
+                    sni = query_params.get('sni', [''])[0]
+                    
+                    node_info = {
+                        'host': host,
+                        'port': port,
+                        'password': userinfo,
+                        'remark': remark,
+                        'sni': sni
+                    }
+                    self.nodes.append(node_info)
+                    
+                    # 更新进度
+                    self.progress.emit(f"正在处理: {remark}")
+                    
+                    # 构建显示信息
+                    result += f"节点名称: {remark}\n"
+                    result += f"服务器: {host}\n"
+                    result += f"端口: {port}\n"
+                    if sni:
+                        result += f"SNI: {sni}\n"
+                    result += "-" * 30 + "\n"
+                
+                except Exception as e:
+                    continue
+            
+            return result if result else "未找到有效的trojan链接"
+            
+        except Exception as e:
+            return f"解析错误: {str(e)}"
+
+    def run(self):
+        try:
+            self.progress.emit("正在获取节点数据...")
+            
+            # 设置较短的超时时间
+            response = requests.get(
+                self.url, 
+                headers={'User-Agent': 'Mozilla/5.0'},
+                timeout=5,
+                proxies={'http': None, 'https': None},
+                verify=False
             )
             
-            # 等待一小段时间确保进程启动
-            time.sleep(1)
+            if response.status_code != 200:
+                self.finished.emit(f"获取URL内容失败: HTTP {response.status_code}")
+                return
+                
+            base64_content = response.text.strip()
+            result = self.parse_nodes(base64_content)
+            self.finished.emit(result)
             
-            if self.process.poll() is None:  # 如果进程还在运行
-                print("代理服务已启动，SOCKS5代理地址：127.0.0.1:10808")
-                return True
-            else:
-                # 获取错误输出
-                _, stderr = self.process.communicate()
-                print(f"代理启动失败，错误信息：{stderr.decode('utf-8', errors='ignore')}")
-                return False
+        except requests.exceptions.Timeout:
+            self.finished.emit("获取节点超时，请检查网络连接")
+        except Exception as e:
+            self.finished.emit(f"发生错误: {str(e)}")
+
+class ProxyThread(QThread):
+    status_update = pyqtSignal(str)
+
+    def __init__(self, node_info):
+        super().__init__()
+        self.node_info = node_info
+        self.process = None
+        self._is_running = True
+
+    def run(self):
+        try:
+            if not self._is_running:
+                return
+
+            # 创建临时配置文件
+            config = {
+                "run_type": "client",
+                "local_addr": "127.0.0.1",
+                "local_port": 10808,
+                "remote_addr": self.node_info['host'],
+                "remote_port": int(self.node_info['port']),
+                "password": self.node_info['password'],
+                "log_level": 1,
+                "ssl": {
+                    "verify": False,
+                    "verify_hostname": False,
+                    "sni": self.node_info.get('sni', "")
+                },
+                "tcp": {
+                    "prefer_ipv4": False
+                },
+                "http": {
+                    "enabled": True,
+                    "port": 10809
+                }
+            }
+            
+            config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=2)
+
+            self.status_update.emit("正在启动代理服务...")
+
+            try:
+                # 尝试使用完整路径启动trojan
+                trojan_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'trojan.exe')
+                if os.path.exists(trojan_path):
+                    self.process = subprocess.Popen(
+                        [trojan_path, config_path],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        creationflags=subprocess.CREATE_NO_WINDOW
+                    )
+                else:
+                    self.status_update.emit("错误: 找不到trojan.exe，请确保它在程序同目录下")
+                    return
+
+                self.status_update.emit("代理服务已启动")
+                
+                while self._is_running and self.process and self.process.poll() is None:
+                    output = self.process.stdout.readline()
+                    if output:
+                        self.status_update.emit(output.decode('utf-8', errors='ignore').strip())
+                    
+            except Exception as e:
+                self.status_update.emit(f"启动代理服务失败: {str(e)}")
                 
         except Exception as e:
-            print(f"启动代理失败: {str(e)}")
-            return False
+            self.status_update.emit(f"代理线程错误: {str(e)}")
+
+    def stop(self):
+        self._is_running = False
+        if self.process:
+            try:
+                self.process.terminate()
+                self.process.wait(timeout=5)
+            except:
+                try:
+                    self.process.kill()
+                except:
+                    pass
+            self.process = None
+        self.status_update.emit("代理服务已停止")
+
+class TrojanUrlViewer(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.fetch_thread = None
+        self.proxy_thread = None
+        self.nodes = []
+        self.initUI()
+        self.setupSystemTray()
+
+    def closeEvent(self, event):
+        if self.tray_icon.isVisible():
+            event.ignore()  # 忽略关闭事件
+            self.hide()     # 隐藏窗口
+            self.tray_icon.showMessage(
+                "ProxyByUrl",
+                "应用程序已最小化到系统托盘，双击图标可以重新打开窗口。",
+                QSystemTrayIcon.Information,
+                2000
+            )
+            print("窗口已最小化到系统托盘")  # 调试信息
+
+    def on_parse_click(self):
+        try:
+            url = self.input_box.text().strip()
+            if not url:
+                self.browser.setText('请输入URL')
+                return
+                
+            if not url.startswith(('http://', 'https://')):
+                self.browser.setText("请输入有效的HTTP/HTTPS URL")
+                return
+            
+            # 如果有正在运行的线程，先停止它
+            if self.fetch_thread and self.fetch_thread.isRunning():
+                self.fetch_thread.stop()
+                self.fetch_thread.wait()
+            
+            # 禁用按钮
+            self.parse_button.setEnabled(False)
+            self.browser.setText("正在获取节点信息...")
+            
+            # 创建新线程
+            self.fetch_thread = FetchThread(url)
+            self.fetch_thread.finished.connect(self.on_fetch_finished)
+            self.fetch_thread.progress.connect(self.on_fetch_progress)
+            self.fetch_thread.start()
+            
+        except Exception as e:
+            self.browser.setText(f"发生错误: {str(e)}")
+            self.parse_button.setEnabled(True)
+
+    def on_fetch_finished(self, result):
+        try:
+            self.browser.setText(result)
+            self.parse_button.setEnabled(True)
+            
+            # 更新节点下拉框
+            self.node_combo.clear()
+            if hasattr(self.fetch_thread, 'nodes'):
+                for node in self.fetch_thread.nodes:
+                    self.node_combo.addItem(f"{node['remark']}")
+                self.nodes = self.fetch_thread.nodes
+            
+        except Exception as e:
+            self.browser.setText(f"处理结果时发生错误: {str(e)}")
+        finally:
+            self.parse_button.setEnabled(True)
+
+    def on_fetch_progress(self, message):
+        try:
+            self.browser.append(message)
+        except Exception as e:
+            print(f"更新进度时发生错误: {str(e)}")
+
+    def initUI(self):
+        self.setWindowTitle('ProxyByUrl')
+        self.setGeometry(300, 300, 600, 500)
+        self.showMaximized()
+        
+        # 使用垂直布局
+        layout = QVBoxLayout()
+        
+        # URL输入区域
+        url_layout = QHBoxLayout()
+        self.input_box = QLineEdit()
+        self.input_box.setPlaceholderText('请输入订阅URL...')
+        self.input_box.returnPressed.connect(self.on_parse_click)
+        self.parse_button = QPushButton('获取节点')
+        self.parse_button.clicked.connect(self.on_parse_click)
+        url_layout.addWidget(self.input_box)
+        url_layout.addWidget(self.parse_button)
+        layout.addLayout(url_layout)
+        
+        # 节点选择下拉框
+        self.node_combo = QComboBox()
+        self.node_combo.setMinimumWidth(200)
+        layout.addWidget(self.node_combo)
+        
+        # 代理控制按钮
+        proxy_layout = QHBoxLayout()
+        self.start_button = QPushButton('启动代理')
+        self.stop_button = QPushButton('停止代理')
+        self.start_button.clicked.connect(self.start_proxy)
+        self.stop_button.clicked.connect(self.stop_proxy)
+        self.stop_button.setEnabled(False)
+        proxy_layout.addWidget(self.start_button)
+        proxy_layout.addWidget(self.stop_button)
+        layout.addLayout(proxy_layout)
+        
+        # 状态显示
+        self.status_label = QLabel('代理状态：未运行')
+        layout.addWidget(self.status_label)
+        
+        # 日志显示区域
+        self.browser = QTextBrowser()
+        layout.addWidget(self.browser)
+        
+        self.setLayout(layout)
+
+    def setupSystemTray(self):
+        # 创建系统托盘图标
+        self.tray_icon = QSystemTrayIcon(self)
+        
+        # 使用更可靠的图标设置方式
+        icon = QIcon()
+        try:
+            # 首先尝试加载自定义图标
+            icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'icon.png')
+            if os.path.exists(icon_path):
+                icon = QIcon(icon_path)
+            else:
+                # 如果找不到自定义图标，使用系统图标
+                icon = QIcon(self.style().standardPixmap(QStyle.SP_ComputerIcon))
+            
+            self.tray_icon.setIcon(icon)
+            print(f"图标已设置，路径: {icon_path}")  # 调试信息
+        except Exception as e:
+            print(f"设置图标时出错: {str(e)}")  # 调试信息
+            icon = QIcon(self.style().standardPixmap(QStyle.SP_ComputerIcon))
+            self.tray_icon.setIcon(icon)
+
+        # 确保托盘图标显示
+        self.tray_icon.show()
+        print("系统托盘图标应该已显示")  # 调试信息
+        
+        # 创建托盘菜单
+        tray_menu = QMenu()
+        show_action = tray_menu.addAction('显示窗口')
+        hide_action = tray_menu.addAction('最小化到托盘')
+        quit_action = tray_menu.addAction('退出')
+        
+        # 绑定动作
+        show_action.triggered.connect(self.showNormal)
+        hide_action.triggered.connect(self.hide)
+        quit_action.triggered.connect(self.on_quit)
+        
+        # 设置托盘图标提示文字
+        self.tray_icon.setToolTip('ProxyByUrl')
+        
+        # 加托盘图标的双击事件
+        self.tray_icon.activated.connect(self.on_tray_icon_activated)
+        
+        # 设置右键菜单
+        self.tray_icon.setContextMenu(tray_menu)
+
+    def on_tray_icon_activated(self, reason):
+        if reason == QSystemTrayIcon.DoubleClick:
+            if self.isHidden():
+                self.showNormal()
+            else:
+                self.hide()
+
+    def on_quit(self):
+        # 清理资源并退出
+        if self.proxy_thread and self.proxy_thread.isRunning():
+            self.proxy_thread.stop()
+            self.proxy_thread.wait()
+        
+        if self.fetch_thread and self.fetch_thread.isRunning():
+            self.fetch_thread.stop()
+            self.fetch_thread.wait()
+        
+        self.tray_icon.hide()
+        QApplication.quit()
+
+    def start_proxy(self):
+        try:
+            current_index = self.node_combo.currentIndex()
+            if current_index < 0 or not self.nodes:
+                self.browser.setText("请先选择节点")
+                return
+                
+            node_info = self.nodes[current_index]
+            
+            # 停止现有代理
+            self.stop_proxy()
+            
+            # 启动新代理
+            self.proxy_thread = ProxyThread(node_info)
+            self.proxy_thread.status_update.connect(self.update_proxy_status)
+            self.proxy_thread.start()
+            
+            self.start_button.setEnabled(False)
+            self.stop_button.setEnabled(True)
+            
+            # 更新状态标签显示代理信息
+            status_text = (
+                f"代理状态：运行中\n"
+                f"SOCKS5: 127.0.0.1:10808\n"
+                f"HTTP: 127.0.0.1:10809\n"
+                f"节点: {node_info['remark']}"
+            )
+            self.status_label.setText(status_text)
+            
+        except Exception as e:
+            self.browser.setText(f"启动代理时发生错误: {str(e)}")
+            self.start_button.setEnabled(True)
+            self.stop_button.setEnabled(False)
 
     def stop_proxy(self):
-        """停止代理服务"""
-        if self.process:
-            self.process.terminate()
-            self.process.wait()
-            self.process = None
-        if os.path.exists(self.config_path):
-            try:
-                os.remove(self.config_path)
-                print("配置文件已清理")
-            except Exception as e:
-                print(f"清理配置文件失败: {str(e)}")
-
-def fetch_and_parse_trojan_links(url):
-    if url.startswith('@'):
-        url = url[1:]  # 移除开头的@符号
-    
-    try:
-        # 禁用代理
-        session = requests.Session()
-        session.trust_env = False
-        
-        # 添加请求头
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1'
-        }
-        
-        # 获取URL内容
-        response = session.get(url, headers=headers, timeout=10)
-        
-        # 如果响应状态码不是200，抛出异常
-        if response.status_code != 200:
-            print(f"服务器返回错误状态码: {response.status_code}")
-            print("响应内容:", response.text[:200])
-            return None
-            
-        content = response.content
-        
-        # 调试信息
-        print("\n[调试信息]")
-        print("响应状态码:", response.status_code)
-        print("响应头:", dict(response.headers))
-        print("原始内容前100字节:", content[:100])
-        
-        # 尝试不同的解码方式
         try:
-            # 如果内容已经是trojan链接，直接解码
-            if content.startswith(b'trojan://'):
-                decoded_content = content.decode('utf-8')
-            else:
-                # 尝试base64解码
-                try:
-                    # 移除可能的空白字符和换行符
-                    content_str = content.decode('ascii', errors='ignore').strip()
-                    # base64解码
-                    decoded_content = base64.b64decode(content_str).decode('utf-8')
-                except Exception as e:
-                    print(f"Base64解码失败: {str(e)}")
-                    # 尝试直接解码
-                    decoded_content = content.decode('utf-8', errors='ignore')
-        
-            # 检查解码后的内容
-            print("\n[解码后的内容前100个字符]")
-            print(decoded_content[:100])
+            if self.proxy_thread:
+                self.proxy_thread.stop()
+                self.proxy_thread.wait()
+                self.proxy_thread = None
             
-            # 解析所有trojan链接
-            links = [link for link in decoded_content.strip().split('\n') 
-                    if link.strip().startswith('trojan://')]
+            self.start_button.setEnabled(True)
+            self.stop_button.setEnabled(False)
+            self.status_label.setText("代理状态：未运行")
             
-            if not links:
-                print("未找到有效的trojan链接")
-                return None
-                
-            print("\n可用的服务器节点：")
-            for index, link in enumerate(links, 1):
-                name = unquote(link.split('#')[-1]) if '#' in link else f"节点 {index}"
-                print(f"{index}. {name}")
-                
-            while True:
-                try:
-                    choice = int(input("\n请选择节点编号: "))
-                    if 1 <= choice <= len(links):
-                        selected_link = links[choice-1]
-                        print(f"\n已选择: {unquote(selected_link.split('#')[-1])}")
-                        return selected_link
-                    else:
-                        print("无效的选择，请输入正确的节点编号")
-                except ValueError:
-                    print("请输入数字！")
-                
-        except Exception as decode_error:
-            print(f"内容解码错误: {str(decode_error)}")
-            return None
-            
-    except requests.exceptions.RequestException as e:
-        print(f"网络请求错误: {str(e)}")
-    except Exception as e:
-        print(f"生错误: {str(e)}")
-        import traceback
-        print("详细错误信息:")
-        print(traceback.format_exc())
-    return None
+        except Exception as e:
+            self.browser.setText(f"停止代理时发生错误: {str(e)}")
 
-def parse_trojan_url(trojan_url):
-    """解���trojan链接的详细信息"""
-    try:
-        match = re.match(r'trojan://([^@]+)@([^:]+):(\d+)\?(.+)', trojan_url)
-        if match:
-            password, server, port, params = match.groups()
-            
-            param_dict = {}
-            for param in params.split('&'):
-                key, value = param.split('=')
-                param_dict[key] = value
-                
-            return {
-                'password': password,
-                'server': server,
-                'port': port,
-                'params': param_dict
-            }
-    except Exception as e:
-        print(f"解析错误: {str(e)}")
-    return None
+    def update_proxy_status(self, message):
+        try:
+            self.browser.append(message)
+        except Exception as e:
+            print(f"更新状态时发生错误: {str(e)}")
 
 def main():
-    proxy = XrayProxy()
-    
-    while True:
-        url = input("\n请输入订阅URL (输入 'q' 退出): ").strip()
-        
-        if url.lower() == 'q':
-            print("程序已退出")
-            break
-            
-        if not url:
-            print("URL不能为空，请重新输入")
-            continue
-            
-        # 获取并选择trojan链接
-        selected_link = fetch_and_parse_trojan_links(url)
-        
-        if selected_link:
-            # 解析选中的链接
-            config = parse_trojan_url(selected_link)
-            if config:
-                print("\n链接详细信息:")
-                print(f"服务器: {config['server']}")
-                print(f"端口: {config['port']}")
-                
-                # 停止现有代理（如果有）
-                proxy.stop_proxy()
-                
-                # 创建新配置并启动代理
-                proxy.create_config(config)
-                if proxy.start_proxy():
-                    print("\n代理已启动！")
-                    print("按 Ctrl+C 停止代理服务")
-                    try:
-                        # 保持程序运行
-                        while True:
-                            time.sleep(1)
-                    except KeyboardInterrupt:
-                        print("\n正在停止代理服务...")
-                        proxy.stop_proxy()
-                        print("代理服务已停止")
-                        break
-                else:
-                    print("代理启动失败")
-
-if __name__ == "__main__":
     try:
-        main()
-    except KeyboardInterrupt:
-        print("\n程序已退出")
-    finally:
-        # 确保清理资源
-        proxy = XrayProxy()
-        proxy.stop_proxy()
+        global app
+        app = QApplication(sys.argv)
+        
+        # 检查系统是否支持系统托盘
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            QMessageBox.critical(None, '系统托盘', '系统托盘不可用')
+            return
+        
+        # 设置退出时不自动关闭
+        QApplication.setQuitOnLastWindowClosed(False)
+        
+        viewer = TrojanUrlViewer()
+        viewer.show()
+        
+        sys.exit(app.exec_())
+    except Exception as e:
+        print(f"程序运行错误: {str(e)}")
+        input("按回车键退出...")  # 添加这行以便查看错误信息
+
+if __name__ == '__main__':
+    main()
