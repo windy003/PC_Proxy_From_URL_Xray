@@ -1,21 +1,40 @@
 {
-  "run_type": "client",
-  "local_addr": "127.0.0.1",
-  "local_port": 10808,
-  "remote_addr": "43.248.116.35",
-  "remote_port": 4045,
-  "password": "9f23a528-a34e-3d5a-bd27-6cf33699b5ee",
-  "log_level": 1,
-  "ssl": {
-    "verify": false,
-    "verify_hostname": false,
-    "sni": "baidu.com"
-  },
-  "tcp": {
-    "prefer_ipv4": false
-  },
-  "http": {
-    "enabled": true,
-    "port": 10809
+  "inbounds": [
+    {
+      "port": 10808,
+      "protocol": "socks",
+      "settings": {
+        "udp": true
+      }
+    },
+    {
+      "port": 10809,
+      "protocol": "http"
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "trojan",
+      "settings": {
+        "servers": [
+          {
+            "address": "43.248.116.35",
+            "port": 4032,
+            "password": "1ca270a4-0f26-32be-b0d4-585a43343a7f"
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "tls",
+        "tlsSettings": {
+          "allowInsecure": true,
+          "serverName": "baidu.com"
+        }
+      }
+    }
+  ],
+  "log": {
+    "loglevel": "info"
   }
 }

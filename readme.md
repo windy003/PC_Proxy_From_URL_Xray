@@ -8,7 +8,7 @@
 ------------------------------------------------
 
 
-proxyByUrl.py   使用v2ray-core 的代理
+proxyByUrl.py   确保项目根目录下有xray.exe
 
 
 

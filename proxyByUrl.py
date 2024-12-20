@@ -11,6 +11,12 @@ from PyQt5.QtWidgets import (QApplication, QSystemTrayIcon, QMenu, QWidget,
                            QStyle)
 from PyQt5.QtGui import QIcon
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
+import threading
+import time
+import socket
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import select
+import struct
 
 class FetchThread(QThread):
     finished = pyqtSignal(str)
@@ -113,73 +119,216 @@ class FetchThread(QThread):
         except Exception as e:
             self.finished.emit(f"发生错误: {str(e)}")
 
+class HttpToSocks5(BaseHTTPRequestHandler):
+    def do_CONNECT(self):
+        try:
+            host, port = self.path.split(':')
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.connect(('127.0.0.1', 10808))  # 连接到 SOCKS5 代理
+            
+            # SOCKS5 握手
+            sock.send(b'\x05\x01\x00')
+            sock.recv(2)
+            
+            # 发送连接请求
+            addr = host.encode()
+            port = int(port)
+            req = b'\x05\x01\x00\x03' + bytes([len(addr)]) + addr + struct.pack('>H', port)
+            sock.send(req)
+            sock.recv(10)
+            
+            self.send_response(200)
+            self.end_headers()
+            
+            conns = [self.connection, sock]
+            while True:
+                r, w, e = select.select(conns, [], [])
+                for s in r:
+                    data = s.recv(4096)
+                    if not data:
+                        return
+                    other = conns[1] if s is conns[0] else conns[0]
+                    other.send(data)
+        except Exception as e:
+            self.send_error(500, str(e))
+            return
+    
+    def do_GET(self):
+        self.handle_request('GET')
+    
+    def do_POST(self):
+        self.handle_request('POST')
+    
+    def handle_request(self, method):
+        try:
+            url = self.path
+            headers = {k: v for k, v in self.headers.items()}
+            
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.connect(('127.0.0.1', 10808))
+            
+            # SOCKS5 握手
+            sock.send(b'\x05\x01\x00')
+            sock.recv(2)
+            
+            # 解析目标地址
+            if url.startswith('http://'):
+                url = url[7:]
+            host = url.split('/')[0]
+            if ':' in host:
+                host, port = host.split(':')
+                port = int(port)
+            else:
+                port = 80
+                
+            # 发送连接请求
+            addr = host.encode()
+            req = b'\x05\x01\x00\x03' + bytes([len(addr)]) + addr + struct.pack('>H', port)
+            sock.send(req)
+            sock.recv(10)
+            
+            # 发送 HTTP 请求
+            request = f'{method} {url} HTTP/1.1\r\n'
+            for k, v in headers.items():
+                request += f'{k}: {v}\r\n'
+            request += '\r\n'
+            
+            sock.send(request.encode())
+            
+            # 接收响应
+            response = sock.recv(4096)
+            self.connection.send(response)
+            
+            while True:
+                data = sock.recv(4096)
+                if not data:
+                    break
+                self.connection.send(data)
+                
+        except Exception as e:
+            self.send_error(500, str(e))
+            return
+
 class ProxyThread(QThread):
     status_update = pyqtSignal(str)
 
-    def __init__(self, node_info):
+    def __init__(self, server, port, password, sni=None):
         super().__init__()
-        self.node_info = node_info
-        self.process = None
+        self.server = server
+        self.port = port
+        self.password = password
+        self.sni = sni
         self._is_running = True
+        self.process = None
 
     def run(self):
         try:
             if not self._is_running:
                 return
 
-            # 创建临时配置文件
+            self.status_update.emit("开始配置代理服务...")
+            
+            # Xray 配置
             config = {
-                "run_type": "client",
-                "local_addr": "127.0.0.1",
-                "local_port": 10808,
-                "remote_addr": self.node_info['host'],
-                "remote_port": int(self.node_info['port']),
-                "password": self.node_info['password'],
-                "log_level": 1,
-                "ssl": {
-                    "verify": False,
-                    "verify_hostname": False,
-                    "sni": self.node_info.get('sni', "")
-                },
-                "tcp": {
-                    "prefer_ipv4": False
-                },
-                "http": {
-                    "enabled": True,
-                    "port": 10809
+                "inbounds": [
+                    {
+                        "port": 10808,
+                        "protocol": "socks",
+                        "settings": {
+                            "udp": True
+                        }
+                    },
+                    {
+                        "port": 10809,
+                        "protocol": "http"
+                    }
+                ],
+                "outbounds": [
+                    {
+                        "protocol": "trojan",
+                        "settings": {
+                            "servers": [
+                                {
+                                    "address": self.server,
+                                    "port": int(self.port),
+                                    "password": self.password
+                                }
+                            ]
+                        },
+                        "streamSettings": {
+                            "network": "tcp",
+                            "security": "tls",
+                            "tlsSettings": {
+                                "allowInsecure": True,
+                                "serverName": self.sni if self.sni else self.server
+                            }
+                        }
+                    }
+                ],
+                "log": {
+                    "loglevel": "info"
                 }
             }
+            
+            self.status_update.emit(f"当前配置信息：")
+            self.status_update.emit(f"SOCKS5代理：127.0.0.1:10808")
+            self.status_update.emit(f"HTTP代理：127.0.0.1:10809")
+            self.status_update.emit(f"远程服务器：{self.server}:{self.port}")
             
             config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
             with open(config_path, 'w', encoding='utf-8') as f:
                 json.dump(config, f, indent=2)
+            
+            self.status_update.emit("配置文件已生成")
 
-            self.status_update.emit("正在启动代理服务...")
+            xray_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'xray.exe')
+            if not os.path.exists(xray_path):
+                self.status_update.emit("错误: 找不到xray.exe，请下载并放置在程序目录")
+                return
 
             try:
-                # 尝试使用完整路径启动trojan
-                trojan_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'trojan.exe')
-                if os.path.exists(trojan_path):
-                    self.process = subprocess.Popen(
-                        [trojan_path, config_path],
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        creationflags=subprocess.CREATE_NO_WINDOW
-                    )
-                else:
-                    self.status_update.emit("错误: 找不到trojan.exe，请确保它在程序同目录下")
-                    return
-
-                self.status_update.emit("代理服务已启动")
+                self.status_update.emit("正在启动Xray进程...")
+                self.process = subprocess.Popen(
+                    [xray_path, "run", "-c", config_path],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    creationflags=subprocess.CREATE_NO_WINDOW
+                )
                 
-                while self._is_running and self.process and self.process.poll() is None:
-                    output = self.process.stdout.readline()
-                    if output:
-                        self.status_update.emit(output.decode('utf-8', errors='ignore').strip())
-                    
+                # 添加实时日志读取
+                def log_reader(pipe, is_error=False):
+                    while self._is_running:
+                        line = pipe.readline()
+                        if not line:
+                            break
+                        try:
+                            decoded_line = line.decode('utf-8').strip()
+                            if decoded_line:
+                                prefix = "[警告]" if is_error else "[信息]"
+                                self.status_update.emit(f"{prefix} {decoded_line}")
+                        except Exception as e:
+                            self.status_update.emit(f"[日志解码错误] {str(e)}")
+
+                stdout_thread = threading.Thread(target=log_reader, args=(self.process.stdout,))
+                stderr_thread = threading.Thread(target=log_reader, args=(self.process.stderr, True))
+                stdout_thread.daemon = True
+                stderr_thread.daemon = True
+                stdout_thread.start()
+                stderr_thread.start()
+
+                self.status_update.emit("代理服务已启动，正在等待连接...")
+                
+                while self._is_running:
+                    if self.process.poll() is not None:
+                        self.status_update.emit(f"Xray进程意外退出，退出码：{self.process.poll()}")
+                        break
+                    time.sleep(1)
+
             except Exception as e:
                 self.status_update.emit(f"启动代理服务失败: {str(e)}")
-                
+                if self.process:
+                    self.process.terminate()
+
         except Exception as e:
             self.status_update.emit(f"代理线程错误: {str(e)}")
 
@@ -187,15 +336,19 @@ class ProxyThread(QThread):
         self._is_running = False
         if self.process:
             try:
-                self.process.terminate()
-                self.process.wait(timeout=5)
-            except:
-                try:
-                    self.process.kill()
-                except:
-                    pass
+                subprocess.run(['taskkill', '/F', '/T', '/PID', str(self.process.pid)], 
+                            stdout=subprocess.PIPE, 
+                            stderr=subprocess.PIPE)
+            except Exception as e:
+                print(f"停止进程时出错: {e}")
             self.process = None
-        self.status_update.emit("代理服务已停止")
+            
+        try:
+            subprocess.run(['taskkill', '/F', '/IM', 'xray.exe'], 
+                         stdout=subprocess.PIPE, 
+                         stderr=subprocess.PIPE)
+        except Exception as e:
+            print(f"清理残留进程时出错: {e}")
 
 class TrojanUrlViewer(QWidget):
     def __init__(self):
@@ -238,7 +391,7 @@ class TrojanUrlViewer(QWidget):
             self.parse_button.setEnabled(False)
             self.browser.setText("正在获取节点信息...")
             
-            # 创建新线程
+            # 建新线程
             self.fetch_thread = FetchThread(url)
             self.fetch_thread.finished.connect(self.on_fetch_finished)
             self.fetch_thread.progress.connect(self.on_fetch_progress)
@@ -332,15 +485,14 @@ class TrojanUrlViewer(QWidget):
                 icon = QIcon(self.style().standardPixmap(QStyle.SP_ComputerIcon))
             
             self.tray_icon.setIcon(icon)
-            print(f"图标已设置，路径: {icon_path}")  # 调试信息
+            print(f"标已设置，路径: {icon_path}")  # 调试信息
         except Exception as e:
             print(f"设置图标时出错: {str(e)}")  # 调试信息
-            icon = QIcon(self.style().standardPixmap(QStyle.SP_ComputerIcon))
-            self.tray_icon.setIcon(icon)
+            
 
         # 确保托盘图标显示
         self.tray_icon.show()
-        print("系统托盘图标应该已显示")  # 调试信息
+        print("系统托盘图标应已显示")  # 调试信息
         
         # 创建托盘菜单
         tray_menu = QMenu()
@@ -356,7 +508,7 @@ class TrojanUrlViewer(QWidget):
         # 设置托盘图标提示文字
         self.tray_icon.setToolTip('ProxyByUrl')
         
-        # 加托盘图标的双击事件
+        # 托盘图标的双击事件
         self.tray_icon.activated.connect(self.on_tray_icon_activated)
         
         # 设置右键菜单
@@ -394,8 +546,8 @@ class TrojanUrlViewer(QWidget):
             # 停止现有代理
             self.stop_proxy()
             
-            # 启动新代理
-            self.proxy_thread = ProxyThread(node_info)
+            # 动新代理
+            self.proxy_thread = ProxyThread(node_info['host'], node_info['port'], node_info['password'], node_info.get('sni'))
             self.proxy_thread.status_update.connect(self.update_proxy_status)
             self.proxy_thread.start()
             
