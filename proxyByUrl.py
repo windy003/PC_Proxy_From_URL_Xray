@@ -8,19 +8,22 @@ from urllib.parse import unquote, urlparse, parse_qs
 from PyQt5.QtWidgets import (QApplication, QSystemTrayIcon, QMenu, QWidget, 
                            QTextBrowser, QLineEdit, QPushButton, QComboBox,
                            QLabel, QVBoxLayout, QHBoxLayout, QMessageBox,
-                           QStyle)
+                           QStyle, QGroupBox)
 from PyQt5.QtGui import QIcon
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 import threading
 import time
+import socket
+import urllib3
 
 class FetchThread(QThread):
     finished = pyqtSignal(str)
     progress = pyqtSignal(str)
 
-    def __init__(self, url):
+    def __init__(self, url, max_retries=3):
         super().__init__()
         self.url = url
+        self.max_retries = max_retries
         self.nodes = []
         self._is_running = True
 
@@ -32,86 +35,135 @@ class FetchThread(QThread):
         return "未知位置"
         # 如果后续需要查询位置，可以使用异步方式或缓存机制
 
-    def parse_nodes(self, base64_content):
+    def parse_nodes(self, content):
+        """解析节点信息"""
         try:
-            decoded = base64.b64decode(base64_content).decode('utf-8')
-            urls = decoded.split('\n')
+            nodes = []
+            lines = content.splitlines()
             
-            result = ""
-            self.nodes = []
-            
-            for url in urls:
-                if not self._is_running:
-                    return "操作已取消"
-
-                url = url.strip()
-                if not url or not url.startswith('trojan://'):
-                    continue
-                    
+            for line in lines:
                 try:
-                    # 解析URL
-                    parsed = urlparse(url)
-                    userinfo, server = parsed.netloc.split('@')
-                    host, port = server.split(':')
-                    
-                    # 获取备注名称
-                    remark = unquote(parsed.fragment) if parsed.fragment else "未命名节点"
-                    
-                    # 获取其他参数
-                    query_params = parse_qs(parsed.query)
-                    sni = query_params.get('sni', [''])[0]
-                    
-                    node_info = {
-                        'host': host,
-                        'port': port,
-                        'password': userinfo,
-                        'remark': remark,
-                        'sni': sni
-                    }
-                    self.nodes.append(node_info)
-                    
-                    # 更新进度
-                    self.progress.emit(f"正在处理: {remark}")
-                    
-                    # 构建显示信息
-                    result += f"节点名称: {remark}\n"
-                    result += f"服务器: {host}\n"
-                    result += f"端口: {port}\n"
-                    if sni:
-                        result += f"SNI: {sni}\n"
-                    result += "-" * 30 + "\n"
-                
+                    if line.startswith('trojan://'):
+                        # 解析trojan链接
+                        # 格式: trojan://password@host:port?sni=xxx#remark
+                        uri = line[9:]  # 去掉 'trojan://'
+                        if '#' in uri:
+                            uri, remark = uri.split('#', 1)
+                            remark = unquote(remark)  # URL解码
+                        else:
+                            remark = '未命名节点'
+                            
+                        if '@' in uri:
+                            password, address = uri.split('@', 1)
+                            if '?' in address:
+                                host_port, params = address.split('?', 1)
+                            else:
+                                host_port = address
+                                params = ''
+                                
+                            if ':' in host_port:
+                                host, port = host_port.split(':', 1)
+                                
+                                # 解析sni参数
+                                sni = 'baidu.com'  # 默认值
+                                if 'sni=' in params:
+                                    for param in params.split('&'):
+                                        if param.startswith('sni='):
+                                            sni = param[4:]
+                                            break
+                                
+                                nodes.append({
+                                    'host': host,
+                                    'port': port,
+                                    'password': password,
+                                    'remark': remark,
+                                    'sni': sni
+                                })
+                                
+                    elif line.startswith('vmess://'):
+                        # 保留原有的vmess解析逻辑
+                        vmess_data = base64.b64decode(line[8:]).decode('utf-8')
+                        node = json.loads(vmess_data)
+                        nodes.append({
+                            'host': node.get('add', ''),
+                            'port': str(node.get('port', '')),
+                            'password': node.get('id', ''),
+                            'remark': node.get('ps', '未命名节点'),
+                            'sni': node.get('sni', 'baidu.com')
+                        })
+                        
                 except Exception as e:
+                    print(f"解析节点失败: {e}, 链接: {line[:30]}...")  # 只打印前30个字符
                     continue
             
-            return result if result else "未找到有效的trojan链接"
+            print(f"成功解析 {len(nodes)} 个节点")  # 调试信息
+            return nodes
             
         except Exception as e:
-            return f"解析错误: {str(e)}"
+            print(f"解析节点时出错: {e}")
+            return []
 
     def run(self):
         try:
-            self.progress.emit("正在获取节点数据...")
+            # 禁用 SSL 警告
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
             
-            # 设置较短的超时时间
-            response = requests.get(
-                self.url, 
-                headers={'User-Agent': 'Mozilla/5.0'},
-                timeout=5,
-                proxies={'http': None, 'https': None},
-                verify=False
-            )
+            # 设置请求头
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1'
+            }
             
-            if response.status_code != 200:
-                self.finished.emit(f"获取URL内容失败: HTTP {response.status_code}")
-                return
-                
-            base64_content = response.text.strip()
-            result = self.parse_nodes(base64_content)
-            self.finished.emit(result)
-            
-        except requests.exceptions.Timeout:
-            self.finished.emit("获取节点超时，请检查网络连接")
+            # 添加重试机制
+            for attempt in range(self.max_retries):
+                try:
+                    # 发送请求时添加headers
+                    response = requests.get(
+                        self.url, 
+                        headers=headers,
+                        verify=False, 
+                        timeout=10
+                    )
+                    
+                    if response.status_code == 200:
+                        # 解析订阅内容
+                        content = response.text.strip()
+                        if content:
+                            try:
+                                decoded_content = base64.b64decode(content).decode('utf-8')
+                                self.nodes = self.parse_nodes(decoded_content)
+                                if self.nodes:
+                                    self.finished.emit("节点获取成功")
+                                    return
+                            except Exception as e:
+                                self.progress.emit(f"解析内容失败: {str(e)}")
+                        
+                        if attempt < self.max_retries - 1:
+                            self.progress.emit(f"未获取到有效节点，正在重试... ({attempt + 1}/{self.max_retries})")
+                            time.sleep(2)
+                            continue
+                        else:
+                            self.finished.emit("未能获取到有效节点")
+                    else:
+                        if attempt < self.max_retries - 1:
+                            self.progress.emit(f"请求失败，状态码: {response.status_code}，正在重试... ({attempt + 1}/{self.max_retries})")
+                            time.sleep(2)
+                            continue
+                        else:
+                            self.finished.emit(f"请求失败，状态码: {response.status_code}")
+                            
+                except requests.exceptions.RequestException as e:
+                    if attempt < self.max_retries - 1:
+                        self.progress.emit(f"网络请求错误: {str(e)}，正在重试... ({attempt + 1}/{self.max_retries})")
+                        time.sleep(2)
+                        continue
+                    else:
+                        self.finished.emit(f"网络请求错误: {str(e)}")
+                        
         except Exception as e:
             self.finished.emit(f"发生错误: {str(e)}")
 
@@ -185,7 +237,7 @@ class ProxyThread(QThread):
             with open(config_path, 'w', encoding='utf-8') as f:
                 json.dump(config, f, indent=2)
             
-            self.status_update.emit("配置文���已生成")
+            self.status_update.emit("配置文件已生成")
 
             xray_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'xray.exe')
             if not os.path.exists(xray_path):
@@ -213,7 +265,7 @@ class ProxyThread(QThread):
                                 prefix = "[警告]" if is_error else "[信息]"
                                 self.status_update.emit(f"{prefix} {decoded_line}")
                         except Exception as e:
-                            self.status_update.emit(f"[���志解码错误] {str(e)}")
+                            self.status_update.emit(f"[日志解码错误] {str(e)}")
 
                 stdout_thread = threading.Thread(target=log_reader, args=(self.process.stdout,))
                 stderr_thread = threading.Thread(target=log_reader, args=(self.process.stderr, True))
@@ -262,20 +314,109 @@ class TrojanUrlViewer(QWidget):
         self.fetch_thread = None
         self.proxy_thread = None
         self.nodes = []
+        # 使用用户目录来保存配置
+        user_home = os.path.expanduser('~')  # 获取用户主目录
+        app_data_dir = os.path.join(user_home, 'AppData', 'Local', 'ProxyByUrl')
+        if not os.path.exists(app_data_dir):
+            os.makedirs(app_data_dir)
+        
+        self.config_file = os.path.join(app_data_dir, 'app_config.json')
+        print(f"配置文件路径: {self.config_file}")  # 调试信息
         self.initUI()
         self.setupSystemTray()
+        self.load_saved_config()  # 加载存的配置
+
+    def load_saved_config(self):
+        try:
+            if os.path.exists(self.config_file):
+                with open(self.config_file, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                    print("加载的配置文件内容:", config)
+                    
+                # 恢复上次的URL
+                if 'last_url' in config:
+                    self.input_box.setText(config['last_url'])
+                    print(f"正在恢复URL: {config['last_url']}")
+                    
+                    # 如果有保存的节点信息，先恢复它
+                    if 'last_node_info' in config and config['last_node_info']:
+                        self.nodes = [config['last_node_info']]  # 先保存上次的节点
+                        self.node_combo.clear()
+                        self.node_combo.addItem(config['last_node_info']['remark'])
+                        self.node_combo.setCurrentIndex(0)
+                    
+                    # 然后尝试获取新的节点列表
+                    QTimer.singleShot(500, lambda: self.on_parse_click_with_callback(config))
+
+        except Exception as e:
+            print(f"加载配置时出错: {e}")
+
+    def clear_invalid_config(self):
+        """清除无效的配置"""
+        try:
+            # 不要立即删除配置文件，而是保留最后一次的有效配置
+            self.browser.setText("获取新节点列表失败，使用上次的配置")
+            # 如果有保存的节点，继续使用
+            if hasattr(self, 'nodes') and self.nodes:
+                return
+            
+            # 只有在完全没有节点的情况下才清除配置
+            if os.path.exists(self.config_file):
+                os.remove(self.config_file)
+            self.input_box.clear()
+            self.node_combo.clear()
+            self.browser.setText("请输入新的订阅链接")
+            
+        except Exception as e:
+            print(f"清除配置时出错: {e}")
+
+    def save_config(self):
+        try:
+            current_index = self.node_combo.currentIndex()
+            # 只在有效的节点选择时才保存配置
+            if current_index >= 0 and self.nodes and current_index < len(self.nodes):
+                config_dir = os.path.dirname(self.config_file)
+                if not os.path.exists(config_dir):
+                    os.makedirs(config_dir)
+
+                selected_node = self.nodes[current_index]
+                print(f"正在保存节点配置，选中的节点: {selected_node['remark']}")
+
+                config = {
+                    'last_url': self.input_box.text(),
+                    'last_node_index': current_index,
+                    'last_node_info': selected_node,
+                    'auto_connect': True
+                }
+                
+                print("即将保存的配置:", config)
+                
+                temp_file = self.config_file + '.tmp'
+                with open(temp_file, 'w', encoding='utf-8') as f:
+                    json.dump(config, f, indent=2, ensure_ascii=False)
+                
+                if os.path.exists(temp_file):
+                    if os.path.exists(self.config_file):
+                        os.remove(self.config_file)
+                    os.rename(temp_file, self.config_file)
+                    print(f"配置已成功保存到: {self.config_file}")
+        except Exception as e:
+            print(f"保存配置时出错: {e}")
 
     def closeEvent(self, event):
+        """重写关闭事件"""
         if self.tray_icon.isVisible():
-            event.ignore()  # 忽略关闭事件
-            self.hide()     # 隐藏窗口
+            self.hide()  # 隐藏主窗口
             self.tray_icon.showMessage(
-                "ProxyByUrl",
-                "应用程序已最小化到系统托盘，双击图标可以重新打开窗口。",
+                '提示',
+                '程序已最小化到系统托盘，双击图标可以重新打开窗口',
                 QSystemTrayIcon.Information,
                 2000
             )
-            print("窗口已最小化到系统托盘")  # 调试信息
+            event.ignore()  # 忽略关闭事件
+        else:
+            self.quit_app()
+            event.accept()
 
     def on_parse_click(self):
         try:
@@ -297,8 +438,8 @@ class TrojanUrlViewer(QWidget):
             self.parse_button.setEnabled(False)
             self.browser.setText("正在获取节点信息...")
             
-            # 建新线程
-            self.fetch_thread = FetchThread(url)
+            # 创建新线程，添加重试机制
+            self.fetch_thread = FetchThread(url, max_retries=3)  # 最多重试3次
             self.fetch_thread.finished.connect(self.on_fetch_finished)
             self.fetch_thread.progress.connect(self.on_fetch_progress)
             self.fetch_thread.start()
@@ -313,11 +454,33 @@ class TrojanUrlViewer(QWidget):
             self.parse_button.setEnabled(True)
             
             # 更新节点下拉框
-            self.node_combo.clear()
-            if hasattr(self.fetch_thread, 'nodes'):
-                for node in self.fetch_thread.nodes:
-                    self.node_combo.addItem(f"{node['remark']}")
+            if hasattr(self.fetch_thread, 'nodes') and self.fetch_thread.nodes:
                 self.nodes = self.fetch_thread.nodes
+                self.node_combo.clear()
+                for node in self.nodes:
+                    self.node_combo.addItem(f"{node['remark']}")
+                
+                # 如果有保存的配置，尝试恢复选择的节点
+                try:
+                    if os.path.exists(self.config_file):
+                        with open(self.config_file, 'r', encoding='utf-8') as f:
+                            config = json.load(f)
+                            if 'last_node_info' in config and config['last_node_info']:
+                                saved_node = config['last_node_info']
+                                for i, node in enumerate(self.nodes):
+                                    if (node['host'] == saved_node['host'] and 
+                                        node['port'] == saved_node['port'] and 
+                                        node['remark'] == saved_node['remark']):
+                                        self.node_combo.setCurrentIndex(i)
+                                        break
+                except Exception as e:
+                    print(f"恢复节点选择时出错: {e}")
+            else:
+                # 如果获取新节点失败，但有保存的节点，继续使用旧节点
+                if hasattr(self, 'nodes') and self.nodes:
+                    self.browser.setText("使用已保存的节点配置")
+                else:
+                    self.browser.setText("获取节点失败，请检查订阅链接是否有效")
             
         except Exception as e:
             self.browser.setText(f"处理结果时发生错误: {str(e)}")
@@ -332,8 +495,21 @@ class TrojanUrlViewer(QWidget):
 
     def initUI(self):
         self.setWindowTitle('ProxyByUrl')
-        self.setGeometry(300, 300, 600, 500)
-        self.showMaximized()
+        # 移除全屏显示
+        # self.showFullScreen()  # 删除这行
+        
+        # 设置窗口大小和位置
+        desktop = QApplication.desktop()
+        screen_rect = desktop.screenGeometry()
+        window_width = int(screen_rect.width() * 0.8)  # 窗口宽度为幕的80%
+        window_height = int(screen_rect.height() * 0.8)  # 窗口高度为屏幕的80%
+        
+        # 计算窗口位置，使其居中显示
+        x = (screen_rect.width() - window_width) // 2
+        y = (screen_rect.height() - window_height) // 2
+        
+        # 设置窗口大小和位置
+        self.setGeometry(x, y, window_width, window_height)
         
         # 使用垂直布局
         layout = QVBoxLayout()
@@ -352,9 +528,10 @@ class TrojanUrlViewer(QWidget):
         # 节点选择下拉框
         self.node_combo = QComboBox()
         self.node_combo.setMinimumWidth(200)
+        self.node_combo.currentIndexChanged.connect(self.on_node_changed)
         layout.addWidget(self.node_combo)
         
-        # 代理��制按钮
+        # 代理控制按钮
         proxy_layout = QHBoxLayout()
         self.start_button = QPushButton('启动代理')
         self.stop_button = QPushButton('停止代理')
@@ -365,94 +542,123 @@ class TrojanUrlViewer(QWidget):
         proxy_layout.addWidget(self.stop_button)
         layout.addLayout(proxy_layout)
         
-        # 状态显示
+        # 状态显示区域 (移到按钮下方)
+        status_group = QGroupBox("代理状态")
+        status_layout = QVBoxLayout()
         self.status_label = QLabel('代理状态：未运行')
-        layout.addWidget(self.status_label)
+        self.status_browser = QTextBrowser()
+        self.status_browser.setMaximumHeight(150)
+        status_layout.addWidget(self.status_label)
+        status_layout.addWidget(self.status_browser)
+        status_group.setLayout(status_layout)
+        layout.addWidget(status_group)
         
-        # 日志显示区域
+        # 节点信息显示区域
         self.browser = QTextBrowser()
         layout.addWidget(self.browser)
         
         self.setLayout(layout)
 
     def setupSystemTray(self):
+        # 获取资源文件路径
+        if getattr(sys, 'frozen', False):
+            # 如果是打包后的exe
+            application_path = sys._MEIPASS
+        else:
+            # 如果是直接运行python脚本
+            application_path = os.path.dirname(os.path.abspath(__file__))
+            
+        # 图标文件路径
+        icon_path = os.path.join(application_path, 'icon.png')
+        
         # 创建系统托盘图标
         self.tray_icon = QSystemTrayIcon(self)
-        
-        # 使用更可靠的图标设置方式
-        icon = QIcon()
-        try:
-            # 首先尝试加载自定义图标
-            icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'icon.png')
-            if os.path.exists(icon_path):
-                icon = QIcon(icon_path)
-            else:
-                # 如果找不到自定义图标，使用系统图标
-                icon = QIcon(self.style().standardPixmap(QStyle.SP_ComputerIcon))
-            
-            self.tray_icon.setIcon(icon)
-            print(f"标已设置，路径: {icon_path}")  # 调试信息
-        except Exception as e:
-            print(f"设置图标时出错: {str(e)}")  # 调试信息
-            
-
-        # 确保托盘图标显示
-        self.tray_icon.show()
-        print("系统托盘图标应已显示")  # 调试信息
+        if os.path.exists(icon_path):
+            self.tray_icon.setIcon(QIcon(icon_path))
+        else:
+            print(f"找不到图标文件: {icon_path}")
         
         # 创建托盘菜单
         tray_menu = QMenu()
-        show_action = tray_menu.addAction('显示窗口')
-        hide_action = tray_menu.addAction('最小化到托盘')
-        quit_action = tray_menu.addAction('退出')
+        show_action = tray_menu.addAction('显示主窗口')
+        show_action.triggered.connect(self.show)
+        quit_action = tray_menu.addAction('退出程序')
+        quit_action.triggered.connect(self.quit_app)
         
-        # 绑定动作
-        show_action.triggered.connect(self.showNormal)
-        hide_action.triggered.connect(self.hide)
-        quit_action.triggered.connect(self.on_quit)
-        
-        # 设置托盘图标提示文字
-        self.tray_icon.setToolTip('ProxyByUrl')
-        
-        # 托盘图标的双击事件
-        self.tray_icon.activated.connect(self.on_tray_icon_activated)
-        
-        # 设置右键菜单
         self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.show()
+        
+        # 添加托盘图标双击事件
+        self.tray_icon.activated.connect(self.tray_icon_activated)
 
-    def on_tray_icon_activated(self, reason):
+    def tray_icon_activated(self, reason):
+        """处理托盘图标的点击事件"""
         if reason == QSystemTrayIcon.DoubleClick:
-            if self.isHidden():
-                self.showNormal()
-            else:
+            if self.isVisible():
                 self.hide()
+            else:
+                self.show()
+                self.activateWindow()  # 激活窗口
 
-    def on_quit(self):
-        # 清理资源并退出
-        if self.proxy_thread and self.proxy_thread.isRunning():
-            self.proxy_thread.stop()
-            self.proxy_thread.wait()
-        
-        if self.fetch_thread and self.fetch_thread.isRunning():
-            self.fetch_thread.stop()
-            self.fetch_thread.wait()
-        
-        self.tray_icon.hide()
-        QApplication.quit()
+    def quit_app(self):
+        """完全退出程序"""
+        try:
+            # 保存配置
+            self.save_config()
+            
+            # 停止代理
+            if hasattr(self, 'proxy_thread') and self.proxy_thread and self.proxy_thread.isRunning():
+                self.proxy_thread.stop()
+                self.proxy_thread.wait()
+            
+            # 结束xray进程
+            subprocess.run(['taskkill', '/F', '/IM', 'xray.exe'], 
+                         stdout=subprocess.PIPE, 
+                         stderr=subprocess.PIPE,
+                         creationflags=subprocess.CREATE_NO_WINDOW)
+            
+            # 移除托盘图标
+            self.tray_icon.hide()
+            
+            # 退出程序
+            QApplication.quit()
+            
+        except Exception as e:
+            print(f"退出程序时出错: {e}")
+            QApplication.quit()
 
     def start_proxy(self):
         try:
+            # 先强制结束所有已存在的 xray 进程
+            subprocess.run(['taskkill', '/F', '/IM', 'xray.exe'], 
+                         stdout=subprocess.PIPE, 
+                         stderr=subprocess.PIPE,
+                         creationflags=subprocess.CREATE_NO_WINDOW)
+            
+            # 等待一小段时间确保进程完全结束
+            time.sleep(1)
+            
+            # 检查端口是否被占用
+            ports_to_check = [10808, 10809]
+            for port in ports_to_check:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                result = sock.connect_ex(('127.0.0.1', port))
+                sock.close()
+                if result == 0:
+                    self.status_browser.append(f"错误：端口 {port} 已被占用，请先关闭占用该端口的程序")
+                    return
+
             current_index = self.node_combo.currentIndex()
             if current_index < 0 or not self.nodes:
-                self.browser.setText("请先选择节点")
+                self.status_browser.append("请先选择节点")
                 return
-                
+            
             node_info = self.nodes[current_index]
             
             # 停止现有代理
             self.stop_proxy()
             
-            # 动新代理
+            # 启动新代理
             self.proxy_thread = ProxyThread(node_info['host'], node_info['port'], node_info['password'], node_info.get('sni'))
             self.proxy_thread.status_update.connect(self.update_proxy_status)
             self.proxy_thread.start()
@@ -469,8 +675,11 @@ class TrojanUrlViewer(QWidget):
             )
             self.status_label.setText(status_text)
             
+            # 保存当前配置
+            self.save_config()
+            
         except Exception as e:
-            self.browser.setText(f"启动���理时发生错误: {str(e)}")
+            self.status_browser.append(f"启动代理时发生错误: {str(e)}")
             self.start_button.setEnabled(True)
             self.stop_button.setEnabled(False)
 
@@ -490,9 +699,51 @@ class TrojanUrlViewer(QWidget):
 
     def update_proxy_status(self, message):
         try:
-            self.browser.append(message)
+            if "错误" in message:
+                message = f'<span style="color: red;">{message}</span>'
+            elif "成功" in message or "已启动" in message:
+                message = f'<span style="color: green;">{message}</span>'
+            elif "警告" in message:
+                message = f'<span style="color: orange;">{message}</span>'
+            
+            self.status_browser.append(message)
+            self.status_browser.verticalScrollBar().setValue(
+                self.status_browser.verticalScrollBar().maximum()
+            )
         except Exception as e:
             print(f"更新状态时发生错误: {str(e)}")
+
+    def on_node_changed(self, index):
+        # 当节点选择改变时保存配置
+        self.save_config()
+
+    def on_parse_click_with_callback(self, config):
+        """获取节点后，根据保存的节点信息选择正确的节点"""
+        def select_saved_node():
+            try:
+                if 'last_node_info' in config and config['last_node_info']:
+                    saved_node = config['last_node_info']
+                    print("尝试恢复的节点信息:", saved_node)  # 调试信息
+                    print("当前可用节点列表:", [(i, node['remark']) for i, node in enumerate(self.nodes)])  # 调试信息
+                    
+                    # 查找匹配的节点
+                    for i, node in enumerate(self.nodes):
+                        if (node['host'] == saved_node['host'] and 
+                            node['port'] == saved_node['port'] and 
+                            node['remark'] == saved_node['remark']):
+                            print(f"找到匹配节点，索引为: {i}")  # 调试信息
+                            self.node_combo.setCurrentIndex(i)
+                            if config.get('auto_connect', False):
+                                QTimer.singleShot(500, self.start_proxy)
+                            break
+            except Exception as e:
+                print(f"选择保存的节点时出错: {e}")
+
+        # 先执行原有的获取节点操作
+        print("开始获取节点...")  # 调试信息
+        self.on_parse_click()
+        # 增加延时时间，确保节点完全加载
+        QTimer.singleShot(2000, select_saved_node)  # 延长等待时间到2
 
 def main():
     try:

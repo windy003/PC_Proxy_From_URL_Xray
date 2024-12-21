@@ -5,8 +5,8 @@ a = Analysis(
     ['proxyByUrl.py'],
     pathex=[],
     binaries=[],
-    datas=[],
-    hiddenimports=[],
+    datas=[('icon.png', '.'), ('xray.exe', '.')],
+    hiddenimports=['PyQt5', 'PyQt5.QtGui', 'PyQt5.QtWidgets', 'PyQt5.QtCore', 'requests', 'json', 'base64', 'urllib3'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -35,4 +35,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=['icon.png'],
 )
