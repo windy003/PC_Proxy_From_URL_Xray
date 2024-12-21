@@ -15,6 +15,8 @@ import threading
 import time
 import socket
 import urllib3
+from PyQt5.QtWidgets import QShortcut
+from PyQt5.QtGui import QKeySequence
 
 class FetchThread(QThread):
     finished = pyqtSignal(str)
@@ -33,7 +35,7 @@ class FetchThread(QThread):
     def get_node_location(self, ip):
         # 直接返回未知位置，不进行网络请求
         return "未知位置"
-        # 如果后续需要查询位置，可以使用异步方式或缓存机制
+        # 如果后续需要查询位置，可��使用异步方式或缓存机制
 
     def parse_nodes(self, content):
         """解析节点信息"""
@@ -64,7 +66,7 @@ class FetchThread(QThread):
                             if ':' in host_port:
                                 host, port = host_port.split(':', 1)
                                 
-                                # 解析sni参数
+                                # 解��sni参数
                                 sni = 'baidu.com'  # 默认值
                                 if 'sni=' in params:
                                     for param in params.split('&'):
@@ -343,7 +345,7 @@ class TrojanUrlViewer(QWidget):
         # 设置窗口图标（这会影响任务栏和Alt+Tab显示的图标）
         self.setWindowIcon(app_icon)
         
-        # 设置系统托盘图标
+        # 设置���统托盘图标
         self.tray_icon = QSystemTrayIcon(self)
         self.tray_icon.setIcon(app_icon)
         
@@ -435,7 +437,7 @@ class TrojanUrlViewer(QWidget):
             self.hide()  # 隐藏主窗口
             self.tray_icon.showMessage(
                 '提示',
-                '程序已最小化到系统托盘，双击图标可以重新打开窗口',
+                '程序已最小化到系统托盘，双击��标可以重新打开窗口',
                 QSystemTrayIcon.Information,
                 2000
             )
@@ -486,7 +488,7 @@ class TrojanUrlViewer(QWidget):
                 for node in self.nodes:
                     self.node_combo.addItem(f"{node['remark']}")
                 
-                # 如果有保存的配置，尝试恢复选择的节点
+                # 如果有保存的配置，尝试恢复选择节点
                 try:
                     if os.path.exists(self.config_file):
                         with open(self.config_file, 'r', encoding='utf-8') as f:
@@ -545,22 +547,32 @@ class TrojanUrlViewer(QWidget):
         self.input_box = QLineEdit()
         self.input_box.setPlaceholderText('请输入订阅URL...')
         self.input_box.returnPressed.connect(self.on_parse_click)
-        self.parse_button = QPushButton('获取节点')
+        
+        # 使用 QShortcut 为输入框添加 Alt+D 快捷键
+        shortcut = QShortcut(QKeySequence("Alt+D"), self)
+        shortcut.activated.connect(lambda: self.input_box.setFocus())
+        
+        self.parse_button = QPushButton('获取节点(&G)')  # 添加Alt+G快捷键
         self.parse_button.clicked.connect(self.on_parse_click)
         url_layout.addWidget(self.input_box)
         url_layout.addWidget(self.parse_button)
         layout.addLayout(url_layout)
         
-        # 节点选择下拉框
+        # 节点选择区域
+        node_layout = QHBoxLayout()
+        node_label = QLabel('节点选择(&N)：')  # 添加带快捷键的标签
         self.node_combo = QComboBox()
         self.node_combo.setMinimumWidth(200)
         self.node_combo.currentIndexChanged.connect(self.on_node_changed)
-        layout.addWidget(self.node_combo)
+        node_label.setBuddy(self.node_combo)  # 将标签与下拉框关联
+        node_layout.addWidget(node_label)
+        node_layout.addWidget(self.node_combo)
+        layout.addLayout(node_layout)
         
         # 代理控制按钮
         proxy_layout = QHBoxLayout()
-        self.start_button = QPushButton('启动代理')
-        self.stop_button = QPushButton('停止代理')
+        self.start_button = QPushButton('启动代理(&S)')  # 添加Alt+S快捷键
+        self.stop_button = QPushButton('停止代理(&T)')   # 添加Alt+T快捷键
         self.start_button.clicked.connect(self.start_proxy)
         self.stop_button.clicked.connect(self.stop_proxy)
         self.stop_button.setEnabled(False)
@@ -692,7 +704,7 @@ class TrojanUrlViewer(QWidget):
             self.start_button.setEnabled(False)
             self.stop_button.setEnabled(True)
             
-            # 更新状态标签显示代理信息
+            # 更新状态标显示代理信息
             status_text = (
                 f"代理状态：运行中\n"
                 f"SOCKS5: 127.0.0.1:10808\n"
