@@ -35,7 +35,7 @@ class FetchThread(QThread):
     def get_node_location(self, ip):
         # 直接返回未知位置，不进行网络请求
         return "未知位置"
-        # 如果后续需要查询位置，可��使用异步方式或缓存机制
+        # 如果后续需要查询位置，可��用异步方式或缓存机制
 
     def parse_nodes(self, content):
         """解析节点信息"""
@@ -66,7 +66,7 @@ class FetchThread(QThread):
                             if ':' in host_port:
                                 host, port = host_port.split(':', 1)
                                 
-                                # 解��sni参数
+                                # 解sni��数
                                 sni = 'baidu.com'  # 默认值
                                 if 'sni=' in params:
                                     for param in params.split('&'):
@@ -149,7 +149,7 @@ class FetchThread(QThread):
                             time.sleep(2)
                             continue
                         else:
-                            self.finished.emit("未能获取到有效节点")
+                            self.finished.emit("未能获取到效节点")
                     else:
                         if attempt < self.max_retries - 1:
                             self.progress.emit(f"请求失败，状态码: {response.status_code}，正在重试... ({attempt + 1}/{self.max_retries})")
@@ -308,7 +308,7 @@ class ProxyThread(QThread):
                          stdout=subprocess.PIPE, 
                          stderr=subprocess.PIPE)
         except Exception as e:
-            print(f"清理残留进程时出错: {e}")
+            print(f"清理残留程时出错: {e}")
 
 class TrojanUrlViewer(QWidget):
     def __init__(self):
@@ -342,10 +342,10 @@ class TrojanUrlViewer(QWidget):
         # 创建图标对象
         app_icon = QIcon(icon_path)
         
-        # 设置窗口图标（这会影响任务栏和Alt+Tab显示的图标）
+        # 设置窗口图标（这会影响任务栏和Alt+Tab��示的图标）
         self.setWindowIcon(app_icon)
         
-        # 设置���统托盘图标
+        # 设置系统托盘图标
         self.tray_icon = QSystemTrayIcon(self)
         self.tray_icon.setIcon(app_icon)
         
@@ -433,18 +433,15 @@ class TrojanUrlViewer(QWidget):
 
     def closeEvent(self, event):
         """重写关闭事件"""
-        if self.tray_icon.isVisible():
-            self.hide()  # 隐藏主窗口
-            self.tray_icon.showMessage(
-                '提示',
-                '程序已最小化到系统托盘，双击��标可以重新打开窗口',
-                QSystemTrayIcon.Information,
-                2000
-            )
-            event.ignore()  # 忽略关闭事件
-        else:
-            self.quit_app()
-            event.accept()
+        # 点击关闭按钮时只最小化到托盘
+        event.ignore()  # 忽略关闭事件
+        self.hide()     # 隐藏窗口
+        self.tray_icon.showMessage(
+            '提示',
+            '程序已最小化到系统托盘，双击图标可以重新打开窗口',
+            QSystemTrayIcon.Information,
+            2000
+        )
 
     def on_parse_click(self):
         try:
@@ -532,7 +529,7 @@ class TrojanUrlViewer(QWidget):
         window_width = int(screen_rect.width() * 0.8)  # 窗口宽度为幕的80%
         window_height = int(screen_rect.height() * 0.8)  # 窗口高度为屏幕的80%
         
-        # 计算窗口位置，使其居中显示
+        # 计算窗口位置，使其居中示
         x = (screen_rect.width() - window_width) // 2
         y = (screen_rect.height() - window_height) // 2
         
@@ -618,8 +615,15 @@ class TrojanUrlViewer(QWidget):
         
         # 创建托盘菜单
         tray_menu = QMenu()
-        show_action = tray_menu.addAction('显示主窗口')
-        show_action.triggered.connect(self.show)
+        
+        # 添加"显示/隐藏"菜单项
+        self.show_action = tray_menu.addAction('显示主窗口')
+        self.show_action.triggered.connect(self.toggle_window)
+        
+        # 添加分隔线
+        tray_menu.addSeparator()
+        
+        # 添加退出菜单项
         quit_action = tray_menu.addAction('退出程序')
         quit_action.triggered.connect(self.quit_app)
         
@@ -629,14 +633,20 @@ class TrojanUrlViewer(QWidget):
         # 添加托盘图标双击事件
         self.tray_icon.activated.connect(self.tray_icon_activated)
 
+    def toggle_window(self):
+        """切换窗口显示状态"""
+        if self.isVisible():
+            self.hide()
+            self.show_action.setText('显示主窗口')
+        else:
+            self.show()
+            self.activateWindow()
+            self.show_action.setText('隐藏主窗口')
+
     def tray_icon_activated(self, reason):
         """处理托盘图标的点击事件"""
         if reason == QSystemTrayIcon.DoubleClick:
-            if self.isVisible():
-                self.hide()
-            else:
-                self.show()
-                self.activateWindow()  # 激活窗口
+            self.toggle_window()
 
     def quit_app(self):
         """完全退出程序"""
@@ -650,20 +660,24 @@ class TrojanUrlViewer(QWidget):
                 self.proxy_thread.wait()
             
             # 结束xray进程
-            subprocess.run(['taskkill', '/F', '/IM', 'xray.exe'], 
-                         stdout=subprocess.PIPE, 
-                         stderr=subprocess.PIPE,
-                         creationflags=subprocess.CREATE_NO_WINDOW)
+            try:
+                subprocess.run(['taskkill', '/F', '/IM', 'xray.exe'], 
+                             stdout=subprocess.PIPE, 
+                             stderr=subprocess.PIPE,
+                             creationflags=subprocess.CREATE_NO_WINDOW)
+            except Exception as e:
+                print(f"结束xray进程时出错: {e}")
             
             # 移除托盘图标
-            self.tray_icon.hide()
+            if hasattr(self, 'tray_icon'):
+                self.tray_icon.setVisible(False)
             
             # 退出程序
-            QApplication.quit()
+            QApplication.instance().quit()
             
         except Exception as e:
             print(f"退出程序时出错: {e}")
-            QApplication.quit()
+            QApplication.instance().quit()
 
     def start_proxy(self):
         try:
@@ -696,7 +710,7 @@ class TrojanUrlViewer(QWidget):
             # 停止现有代理
             self.stop_proxy()
             
-            # 启动新代理
+            # ��动新代理
             self.proxy_thread = ProxyThread(node_info['host'], node_info['port'], node_info['password'], node_info.get('sni'))
             self.proxy_thread.status_update.connect(self.update_proxy_status)
             self.proxy_thread.start()
@@ -785,7 +799,6 @@ class TrojanUrlViewer(QWidget):
 
 def main():
     try:
-        global app
         app = QApplication(sys.argv)
         
         # 检查系统是否支持系统托盘
@@ -794,7 +807,7 @@ def main():
             return
         
         # 设置退出时不自动关闭
-        QApplication.setQuitOnLastWindowClosed(False)
+        app.setQuitOnLastWindowClosed(False)  # 这行很重要！
         
         viewer = TrojanUrlViewer()
         viewer.show()
