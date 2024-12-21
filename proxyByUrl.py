@@ -326,6 +326,32 @@ class TrojanUrlViewer(QWidget):
         self.setupSystemTray()
         self.load_saved_config()  # 加载存的配置
 
+        # 获取资源文件路径
+        if getattr(sys, 'frozen', False):
+            # 如果是打包后的exe
+            application_path = sys._MEIPASS
+        else:
+            # 如果是直接运行python脚本
+            application_path = os.path.dirname(os.path.abspath(__file__))
+            
+        # 图标文件路径
+        icon_path = os.path.join(application_path, 'icon.png')
+        
+        # 创建图标对象
+        app_icon = QIcon(icon_path)
+        
+        # 设置窗口图标（这会影响任务栏和Alt+Tab显示的图标）
+        self.setWindowIcon(app_icon)
+        
+        # 设置系统托盘图标
+        self.tray_icon = QSystemTrayIcon(self)
+        self.tray_icon.setIcon(app_icon)
+        
+        # 在应用程序级别也设置图标
+        app = QApplication.instance()
+        if app is not None:
+            app.setWindowIcon(app_icon)
+
     def load_saved_config(self):
         try:
             if os.path.exists(self.config_file):
