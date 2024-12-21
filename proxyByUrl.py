@@ -35,7 +35,7 @@ class FetchThread(QThread):
     def get_node_location(self, ip):
         # 直接返回未知位置，不进行网络请求
         return "未知位置"
-        # 如果后续需要查询位置，可��用异步方式或缓存机制
+        # 如果后续需要查询位置，可��方式或缓存机制
 
     def parse_nodes(self, content):
         """解析节点信息"""
@@ -66,7 +66,7 @@ class FetchThread(QThread):
                             if ':' in host_port:
                                 host, port = host_port.split(':', 1)
                                 
-                                # 解sni��数
+                                # 解sni参数
                                 sni = 'baidu.com'  # 默认值
                                 if 'sni=' in params:
                                     for param in params.split('&'):
@@ -123,7 +123,7 @@ class FetchThread(QThread):
             # 添加重试机制
             for attempt in range(self.max_retries):
                 try:
-                    # 发送请求时添加headers
+                    # 发送请求时加headers
                     response = requests.get(
                         self.url, 
                         headers=headers,
@@ -180,6 +180,11 @@ class ProxyThread(QThread):
         self.sni = sni
         self._is_running = True
         self.process = None
+        
+        # 初始化配置目录
+        self.app_data_dir = os.path.join(os.path.expanduser('~'), 'AppData', 'Local', 'ProxyByUrl')
+        if not os.path.exists(self.app_data_dir):
+            os.makedirs(self.app_data_dir)
 
     def run(self):
         try:
@@ -187,6 +192,23 @@ class ProxyThread(QThread):
                 return
 
             self.status_update.emit("开始配置代理服务...")
+            
+            # 获取正确的xray路径
+            if getattr(sys, 'frozen', False):
+                # 如果是打包后的exe运行
+                base_path = sys._MEIPASS
+            else:
+                # 如果是直接运行python脚本
+                base_path = os.path.dirname(os.path.abspath(__file__))
+                
+            xray_path = os.path.join(base_path, 'xray.exe')
+            
+            if not os.path.exists(xray_path):
+                self.status_update.emit("错误: 找不到xray.exe，请确保xray.exe与程序在同一目录")
+                return
+            
+            # 使用用户目录的xray配置文件
+            config_path = os.path.join(self.app_data_dir, 'xray_config.json')
             
             # Xray 配置
             config = {
@@ -230,26 +252,15 @@ class ProxyThread(QThread):
                 }
             }
             
-            self.status_update.emit(f"当前配置信息：")
-            self.status_update.emit(f"SOCKS5代理：127.0.0.1:10808")
-            self.status_update.emit(f"HTTP代理：127.0.0.1:10809")
-            self.status_update.emit(f"远程服务器：{self.server}:{self.port}")
-            
-            config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
             with open(config_path, 'w', encoding='utf-8') as f:
                 json.dump(config, f, indent=2)
             
             self.status_update.emit("配置文件已生成")
 
-            xray_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'xray.exe')
-            if not os.path.exists(xray_path):
-                self.status_update.emit("错误: 找不到xray.exe，请下载并放置在程序目录")
-                return
-
             try:
                 self.status_update.emit("正在启动Xray进程...")
                 self.process = subprocess.Popen(
-                    [xray_path, "run", "-c", config_path],
+                    [xray_path, "run", "-c", config_path],  # 使用新的配置路径
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     creationflags=subprocess.CREATE_NO_WINDOW
@@ -316,17 +327,19 @@ class TrojanUrlViewer(QWidget):
         self.fetch_thread = None
         self.proxy_thread = None
         self.nodes = []
-        # 使用用户目录来保存配置
-        user_home = os.path.expanduser('~')  # 获取用户主目录
-        app_data_dir = os.path.join(user_home, 'AppData', 'Local', 'ProxyByUrl')
-        if not os.path.exists(app_data_dir):
-            os.makedirs(app_data_dir)
         
-        self.config_file = os.path.join(app_data_dir, 'app_config.json')
-        print(f"配置文件路径: {self.config_file}")  # 调试信息
+        # 使用用户目录来保存应用配置
+        self.app_data_dir = os.path.join(os.path.expanduser('~'), 'AppData', 'Local', 'ProxyByUrl')
+        if not os.path.exists(self.app_data_dir):
+            os.makedirs(self.app_data_dir)
+        
+        # 应用程序配置文件路径
+        self.app_config_file = os.path.join(self.app_data_dir, 'app_config.json')
+        print(f"应用配置文件路径: {self.app_config_file}")  # 调试信息
+        
         self.initUI()
         self.setupSystemTray()
-        self.load_saved_config()  # 加载存的配置
+        self.load_saved_config()
 
         # 获取资源文件路径
         if getattr(sys, 'frozen', False):
@@ -342,7 +355,7 @@ class TrojanUrlViewer(QWidget):
         # 创建图标对象
         app_icon = QIcon(icon_path)
         
-        # 设置窗口图标（这会影响任务栏和Alt+Tab��示的图标）
+        # 设置窗口图标（这会影响任务栏和Alt+Tab示的图标）
         self.setWindowIcon(app_icon)
         
         # 设置系统托盘图标
@@ -356,28 +369,27 @@ class TrojanUrlViewer(QWidget):
 
     def load_saved_config(self):
         try:
-            if os.path.exists(self.config_file):
-                with open(self.config_file, 'r', encoding='utf-8') as f:
+            if os.path.exists(self.app_config_file):
+                with open(self.app_config_file, 'r', encoding='utf-8') as f:
                     config = json.load(f)
-                    print("加载的配置文件内容:", config)
+                    print("加载的应用配置文件内容:", config)
                     
-                # 恢复上次的URL
-                if 'last_url' in config:
-                    self.input_box.setText(config['last_url'])
-                    print(f"正在恢复URL: {config['last_url']}")
-                    
-                    # 如果有保存的节点信息，先恢复它
-                    if 'last_node_info' in config and config['last_node_info']:
-                        self.nodes = [config['last_node_info']]  # 先保存上次的节点
+                    # 恢复所有节点信息
+                    if 'all_nodes' in config and config['all_nodes']:
+                        print("找到已保存的所有节点信息")
+                        self.nodes = config['all_nodes']
                         self.node_combo.clear()
-                        self.node_combo.addItem(config['last_node_info']['remark'])
-                        self.node_combo.setCurrentIndex(0)
-                    
-                    # 然后尝试获取新的节点列表
-                    QTimer.singleShot(500, lambda: self.on_parse_click_with_callback(config))
+                        for node in self.nodes:
+                            self.node_combo.addItem(f"{node['remark']}")
+                        
+                        # 设置上次选择的节点
+                        if 'last_node_index' in config:
+                            last_index = config['last_node_index']
+                            if 0 <= last_index < len(self.nodes):
+                                self.node_combo.setCurrentIndex(last_index)
 
         except Exception as e:
-            print(f"加载配置时出错: {e}")
+            print(f"加载应用配置时出错: {e}")
 
     def clear_invalid_config(self):
         """清除无效的配置"""
@@ -389,52 +401,50 @@ class TrojanUrlViewer(QWidget):
                 return
             
             # 只有在完全没有节点的情况下才清除配置
-            if os.path.exists(self.config_file):
-                os.remove(self.config_file)
+            if os.path.exists(self.app_config_file):
+                os.remove(self.app_config_file)
             self.input_box.clear()
             self.node_combo.clear()
             self.browser.setText("请输入新的订阅链接")
             
         except Exception as e:
-            print(f"清除配置时出错: {e}")
+            print(f"清除应用配置时出错: {e}")
 
-    def save_config(self):
+    def save_config(self, save_url=True):
         try:
             current_index = self.node_combo.currentIndex()
-            # 只在有效的节点选择时才保存配置
             if current_index >= 0 and self.nodes and current_index < len(self.nodes):
-                config_dir = os.path.dirname(self.config_file)
-                if not os.path.exists(config_dir):
-                    os.makedirs(config_dir)
+                if not os.path.exists(self.app_data_dir):
+                    os.makedirs(self.app_data_dir)
 
                 selected_node = self.nodes[current_index]
-                print(f"正在保存节点配置，选中的节点: {selected_node['remark']}")
-
                 config = {
-                    'last_url': self.input_box.text(),
                     'last_node_index': current_index,
                     'last_node_info': selected_node,
+                    'all_nodes': self.nodes,
                     'auto_connect': True
                 }
                 
-                print("即将保存的配置:", config)
+                if save_url:
+                    config['last_url'] = self.input_box.text()
                 
-                temp_file = self.config_file + '.tmp'
+                # 使用临时文件确保安全写入
+                temp_file = self.app_config_file + '.tmp'
                 with open(temp_file, 'w', encoding='utf-8') as f:
                     json.dump(config, f, indent=2, ensure_ascii=False)
                 
                 if os.path.exists(temp_file):
-                    if os.path.exists(self.config_file):
-                        os.remove(self.config_file)
-                    os.rename(temp_file, self.config_file)
-                    print(f"配置已成功保存到: {self.config_file}")
+                    if os.path.exists(self.app_config_file):
+                        os.remove(self.app_config_file)
+                    os.rename(temp_file, self.app_config_file)
+                    print(f"配置已成功保存到: {self.app_config_file}")
         except Exception as e:
-            print(f"保存配置时出错: {e}")
+            print(f"保存应用配置时出错: {e}")
 
     def closeEvent(self, event):
         """重写关闭事件"""
         # 点击关闭按钮时只最小化到托盘
-        event.ignore()  # 忽略关闭事件
+        event.ignore()  # 略关闭事件
         self.hide()     # 隐藏窗口
         self.tray_icon.showMessage(
             '提示',
@@ -481,34 +491,26 @@ class TrojanUrlViewer(QWidget):
             # 更新节点下拉框
             if hasattr(self.fetch_thread, 'nodes') and self.fetch_thread.nodes:
                 self.nodes = self.fetch_thread.nodes
+                print(f"成功获取到 {len(self.nodes)} 个节点")
                 self.node_combo.clear()
                 for node in self.nodes:
                     self.node_combo.addItem(f"{node['remark']}")
                 
-                # 如果有保存的配置，尝试恢复选择节点
-                try:
-                    if os.path.exists(self.config_file):
-                        with open(self.config_file, 'r', encoding='utf-8') as f:
-                            config = json.load(f)
-                            if 'last_node_info' in config and config['last_node_info']:
-                                saved_node = config['last_node_info']
-                                for i, node in enumerate(self.nodes):
-                                    if (node['host'] == saved_node['host'] and 
-                                        node['port'] == saved_node['port'] and 
-                                        node['remark'] == saved_node['remark']):
-                                        self.node_combo.setCurrentIndex(i)
-                                        break
-                except Exception as e:
-                    print(f"恢复节点选择时出错: {e}")
+                # 清空URL输入框
+                self.input_box.clear()
+                
+                # 保存配置但不保存URL
+                self.save_config(save_url=False)  # 需要修改save_config方法接受参数
+                
             else:
-                # 如果获取新节点失败，但有保存的节点，继续使用旧节点
-                if hasattr(self, 'nodes') and self.nodes:
-                    self.browser.setText("使用已保存的节点配置")
-                else:
+                print("未获取到新节点，保留现有节点")
+                if not self.nodes:
+                    self.nodes = []
+                    self.node_combo.clear()
                     self.browser.setText("获取节点失败，请检查订阅链接是否有效")
-            
+                
         except Exception as e:
-            self.browser.setText(f"处理结果时发生错误: {str(e)}")
+            print(f"处理结果时发生错误: {str(e)}")
         finally:
             self.parse_button.setEnabled(True)
 
@@ -569,7 +571,7 @@ class TrojanUrlViewer(QWidget):
         # 代理控制按钮
         proxy_layout = QHBoxLayout()
         self.start_button = QPushButton('启动代理(&S)')  # 添加Alt+S快捷键
-        self.stop_button = QPushButton('停止代理(&T)')   # 添加Alt+T快捷键
+        self.stop_button = QPushButton('停止代理(&T)')   # 加Alt+T快捷键
         self.start_button.clicked.connect(self.start_proxy)
         self.stop_button.clicked.connect(self.stop_proxy)
         self.stop_button.setEnabled(False)
@@ -603,7 +605,7 @@ class TrojanUrlViewer(QWidget):
             # 如果是直接运行python脚本
             application_path = os.path.dirname(os.path.abspath(__file__))
             
-        # 图标文件路径
+        # 图标文路径
         icon_path = os.path.join(application_path, 'icon.png')
         
         # 创建系统托盘图标
@@ -681,7 +683,7 @@ class TrojanUrlViewer(QWidget):
 
     def start_proxy(self):
         try:
-            # 先强制结束所有已存在的 xray 进程
+            # 先强制结束有已存在的 xray 进程
             subprocess.run(['taskkill', '/F', '/IM', 'xray.exe'], 
                          stdout=subprocess.PIPE, 
                          stderr=subprocess.PIPE,
@@ -710,7 +712,7 @@ class TrojanUrlViewer(QWidget):
             # 停止现有代理
             self.stop_proxy()
             
-            # ��动新代理
+            # 启动新代理
             self.proxy_thread = ProxyThread(node_info['host'], node_info['port'], node_info['password'], node_info.get('sni'))
             self.proxy_thread.status_update.connect(self.update_proxy_status)
             self.proxy_thread.start()
@@ -747,7 +749,7 @@ class TrojanUrlViewer(QWidget):
             self.status_label.setText("代理状态：未运行")
             
         except Exception as e:
-            self.browser.setText(f"停止代理时发生错误: {str(e)}")
+            self.browser.setText(f"止代理时发生错误: {str(e)}")
 
     def update_proxy_status(self, message):
         try:
@@ -776,7 +778,7 @@ class TrojanUrlViewer(QWidget):
                 if 'last_node_info' in config and config['last_node_info']:
                     saved_node = config['last_node_info']
                     print("尝试恢复的节点信息:", saved_node)  # 调试信息
-                    print("当前可用节点列表:", [(i, node['remark']) for i, node in enumerate(self.nodes)])  # 调试信息
+                    print("当前���用节点列表:", [(i, node['remark']) for i, node in enumerate(self.nodes)])  # 调试信息
                     
                     # 查找匹配的节点
                     for i, node in enumerate(self.nodes):

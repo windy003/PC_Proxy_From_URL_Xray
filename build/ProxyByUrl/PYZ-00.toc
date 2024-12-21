@@ -1,4 +1,4 @@
-('D:\\files\\projects\\proxyMadeByME\\build\\ProxyByUrl\\PYZ-00.pyz',
+('D:\\files\\projects\\proxyMadeByME\\build\\proxyByUrl\\PYZ-00.pyz',
  [('PyQt5',
    'C:\\Users\\windy\\.pyenv\\pyenv-win\\versions\\3.9.7\\lib\\site-packages\\PyQt5\\__init__.py',
    'PYMODULE'),
