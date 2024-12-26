@@ -37,7 +37,7 @@ class FetchThread(QThread):
     def get_node_location(self, ip):
         # 直接返回未知位置，不进行网络请求
         return "未知位置"
-        # 如果需要查询位置，可方式或缓存机制
+        # 如果��要查询位置，可方式或缓存机制
 
     def parse_nodes(self, content):
         """解析节点信息"""
@@ -125,7 +125,7 @@ class FetchThread(QThread):
             # 添加重试机制
             for attempt in range(self.max_retries):
                 try:
-                    # 发送请求时��headers
+                    # 发送请求时headers
                     response = requests.get(
                         self.url, 
                         headers=headers,
@@ -313,7 +313,7 @@ class ProxyThread(QThread):
                             stdout=subprocess.PIPE, 
                             stderr=subprocess.PIPE)
             except Exception as e:
-                print(f"停��进程时出错: {e}")
+                print(f"停止进程时出错: {e}")
             self.process = None
             
         try:
@@ -342,13 +342,16 @@ class TrojanUrlViewer(QWidget):
         print(f"应用配置文件路径: {self.app_config_file}")
         
         # 初始化顺序
-        self.initUI()                  # 1. 初始化UI
-        self.setup_autostart()         # 2. 设置自动启动（这会更新self.auto_start的值）
-        self.setupSystemTray()         # 3. 设置系统托盘（现在可以安全使用self.auto_start）
-        self.setup_firewall_rules()    # 4. 设置防火墙规则
-        self.load_saved_config()       # 5. 加载保存的配置
+        self.initUI()                  
+        self.setup_autostart()         
+        self.setupSystemTray()         
+        self.setup_firewall_rules()    
+        self.load_saved_config()       
         
-        # 6. 如果有节点则自动连接
+        # 默认隐藏窗口
+        self.hide()  # 添加这行
+        
+        # 如果有节点则自动连接
         if self.nodes:
             QTimer.singleShot(1000, self.auto_connect)
 
@@ -384,7 +387,7 @@ class TrojanUrlViewer(QWidget):
                     
                     # 恢复所有点信息
                     if 'all_nodes' in config and config['all_nodes']:
-                        print("找到已保存的所有节点信息")
+                        print("找到已保存的所有节点��息")
                         self.nodes = config['all_nodes']
                         self.node_combo.clear()
                         for node in self.nodes:
@@ -479,7 +482,7 @@ class TrojanUrlViewer(QWidget):
             
             # 禁用按钮
             self.parse_button.setEnabled(False)
-            self.browser.setText("正在获取节点信息...")
+            self.browser.setText("正在获取节点��息...")
             
             # 创建新线程，添加重试机制
             self.fetch_thread = FetchThread(url, max_retries=3)  # 最多重试3次
@@ -511,7 +514,7 @@ class TrojanUrlViewer(QWidget):
                 self.save_config(save_url=False)  # 需要修改save_config方法接受参数
                 
             else:
-                print("未获取到新节点，保留现有节点")
+                print("���获取到新节点，保留现有节点")
                 if not self.nodes:
                     self.nodes = []
                     self.node_combo.clear()
@@ -576,7 +579,7 @@ class TrojanUrlViewer(QWidget):
         node_layout.addWidget(self.node_combo)
         layout.addLayout(node_layout)
         
-        # 代理控制按钮
+        # 代理控制按���
         proxy_layout = QHBoxLayout()
         self.start_button = QPushButton('启动代理(&S)')  # 添加Alt+S快捷键
         self.stop_button = QPushButton('停止代理(&T)')   # 加Alt+T快捷键
@@ -642,6 +645,15 @@ class TrojanUrlViewer(QWidget):
         self.autostart_action.setCheckable(True)
         self.autostart_action.setChecked(self.auto_start)
         self.autostart_action.triggered.connect(self.toggle_autostart)
+        
+        tray_menu.addSeparator()
+        
+        # 修改托盘图标的提示信息
+        self.tray_icon.setToolTip('ProxyByUrl (运行中)')
+        
+        # 添加状态显示到托盘菜单
+        self.status_action = tray_menu.addAction('状态: 未连接')
+        self.status_action.setEnabled(False)
         
         tray_menu.addSeparator()
         
@@ -715,7 +727,7 @@ class TrojanUrlViewer(QWidget):
                 result = sock.connect_ex(('127.0.0.1', port))
                 sock.close()
                 if result == 0:
-                    self.status_browser.append(f"错误端口 {port} 已被占用，请先关闭占用该端口的程序")
+                    self.status_browser.append(f"���误端口 {port} 已被占用，请先关闭占用该端口的程序")
                     return
 
             current_index = self.node_combo.currentIndex()
@@ -771,8 +783,10 @@ class TrojanUrlViewer(QWidget):
         try:
             if "错误" in message:
                 message = f'<span style="color: red;">{message}</span>'
+                self.status_action.setText('状态: 连接错误')
             elif "成功" in message or "已启动" in message:
                 message = f'<span style="color: green;">{message}</span>'
+                self.status_action.setText('状态: 已连接')
             elif "警告" in message:
                 message = f'<span style="color: orange;">{message}</span>'
             
@@ -781,7 +795,7 @@ class TrojanUrlViewer(QWidget):
                 self.status_browser.verticalScrollBar().maximum()
             )
         except Exception as e:
-            print(f"更新状态时发生错误: {str(e)}")
+            print(f"更新状态时发生错误: {e}")
 
     def on_node_changed(self, index):
         # 当节点选择改变时保存配置
@@ -919,37 +933,47 @@ class TrojanUrlViewer(QWidget):
 
 def main():
     try:
-        # 检查是否需要以管理员权限重启
+        # 检查是否已经运行
+        socket_name = "ProxyByUrlSingleInstance"
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.bind(('localhost', 12345))  # 使用特定端口检查
+        except socket.error:
+            print("程序已经在运行")
+            sys.exit(0)
+            
+        # 检查管理员权限
         if not ctypes.windll.shell32.IsUserAnAdmin():
-            # 使用runas命令以管理员权限重启程序
-            ctypes.windll.shell32.ShellExecuteW(
-                None, 
-                "runas", 
-                sys.executable, 
-                " ".join(sys.argv), 
-                None, 
-                1
-            )
+            # 使用 CREATE_NO_WINDOW 标志启动新进程
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = subprocess.SW_HIDE
+            
+            subprocess.Popen([
+                'powershell.exe', 
+                'Start-Process', 
+                sys.executable,
+                '-ArgumentList', ' '.join(sys.argv),
+                '-Verb', 'RunAs',
+                '-WindowStyle', 'Hidden'
+            ], startupinfo=startupinfo)
             sys.exit()
             
         app = QApplication(sys.argv)
         
-        # 检查系统是否支持系统托盘
         if not QSystemTrayIcon.isSystemTrayAvailable():
-            QMessageBox.critical(None, '系统托盘', '系统托盘不可用')
-            return
-        
-        # 设置退出时不自动关闭
+            sys.exit(1)
+            
         app.setQuitOnLastWindowClosed(False)
         
         viewer = TrojanUrlViewer()
-        viewer.show()
+        # 移除 viewer.show()
         
         sys.exit(app.exec_())
         
     except Exception as e:
         print(f"程序运行错误: {str(e)}")
-        input("按回车键退出...")
+        sys.exit(1)
 
 if __name__ == '__main__':
     main()
