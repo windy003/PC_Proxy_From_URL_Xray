@@ -17,6 +17,8 @@ import socket
 import urllib3
 from PyQt5.QtWidgets import QShortcut
 from PyQt5.QtGui import QKeySequence
+import winreg
+import ctypes
 
 class FetchThread(QThread):
     finished = pyqtSignal(str)
@@ -35,7 +37,7 @@ class FetchThread(QThread):
     def get_node_location(self, ip):
         # 直接返回未知位置，不进行网络请求
         return "未知位置"
-        # 如果后续需要查询位置，可��方式或缓存机制
+        # 如果需要查询位置，可方式或缓存机制
 
     def parse_nodes(self, content):
         """解析节点信息"""
@@ -123,7 +125,7 @@ class FetchThread(QThread):
             # 添加重试机制
             for attempt in range(self.max_retries):
                 try:
-                    # 发送请求时加headers
+                    # 发送请求时��headers
                     response = requests.get(
                         self.url, 
                         headers=headers,
@@ -149,7 +151,7 @@ class FetchThread(QThread):
                             time.sleep(2)
                             continue
                         else:
-                            self.finished.emit("未能获取到效节点")
+                            self.finished.emit("未能获取到效点")
                     else:
                         if attempt < self.max_retries - 1:
                             self.progress.emit(f"请求失败，状态码: {response.status_code}，正在重试... ({attempt + 1}/{self.max_retries})")
@@ -311,7 +313,7 @@ class ProxyThread(QThread):
                             stdout=subprocess.PIPE, 
                             stderr=subprocess.PIPE)
             except Exception as e:
-                print(f"停止进程时出错: {e}")
+                print(f"停��进程时出错: {e}")
             self.process = None
             
         try:
@@ -324,29 +326,36 @@ class ProxyThread(QThread):
 class TrojanUrlViewer(QWidget):
     def __init__(self):
         super().__init__()
+        # 基本属性初始化
         self.fetch_thread = None
         self.proxy_thread = None
         self.nodes = []
+        self.auto_start = False  # 移到最前面初始化
         
-        # 使用用户目录来保存应用配置
+        # 配置目录初始化
         self.app_data_dir = os.path.join(os.path.expanduser('~'), 'AppData', 'Local', 'ProxyByUrl')
         if not os.path.exists(self.app_data_dir):
             os.makedirs(self.app_data_dir)
         
-        # 应用程序配置文件路径
+        # 配置文件路径
         self.app_config_file = os.path.join(self.app_data_dir, 'app_config.json')
-        print(f"应用配置文件路径: {self.app_config_file}")  # 调试信息
+        print(f"应用配置文件路径: {self.app_config_file}")
         
-        self.initUI()
-        self.setupSystemTray()
-        self.load_saved_config()
+        # 初始化顺序
+        self.initUI()                  # 1. 初始化UI
+        self.setup_autostart()         # 2. 设置自动启动（这会更新self.auto_start的值）
+        self.setupSystemTray()         # 3. 设置系统托盘（现在可以安全使用self.auto_start）
+        self.setup_firewall_rules()    # 4. 设置防火墙规则
+        self.load_saved_config()       # 5. 加载保存的配置
+        
+        # 6. 如果有节点则自动连接
+        if self.nodes:
+            QTimer.singleShot(1000, self.auto_connect)
 
         # 获取资源文件路径
         if getattr(sys, 'frozen', False):
-            # 如果是打包后的exe
             application_path = sys._MEIPASS
         else:
-            # 如果是直接运行python脚本
             application_path = os.path.dirname(os.path.abspath(__file__))
             
         # 图标文件路径
@@ -355,14 +364,13 @@ class TrojanUrlViewer(QWidget):
         # 创建图标对象
         app_icon = QIcon(icon_path)
         
-        # 设置窗口图标（这会影响任务栏和Alt+Tab示的图标）
+        # 设置窗口图标
         self.setWindowIcon(app_icon)
         
         # 设置系统托盘图标
-        self.tray_icon = QSystemTrayIcon(self)
         self.tray_icon.setIcon(app_icon)
         
-        # 在应用程序级别也设置图标
+        # 设置应用程序图标
         app = QApplication.instance()
         if app is not None:
             app.setWindowIcon(app_icon)
@@ -374,7 +382,7 @@ class TrojanUrlViewer(QWidget):
                     config = json.load(f)
                     print("加载的应用配置文件内容:", config)
                     
-                    # 恢复所有节点信息
+                    # 恢复所有点信息
                     if 'all_nodes' in config and config['all_nodes']:
                         print("找到已保存的所有节点信息")
                         self.nodes = config['all_nodes']
@@ -629,6 +637,14 @@ class TrojanUrlViewer(QWidget):
         quit_action = tray_menu.addAction('退出程序')
         quit_action.triggered.connect(self.quit_app)
         
+        # 添加自启动菜单项
+        self.autostart_action = tray_menu.addAction('开机自启动')
+        self.autostart_action.setCheckable(True)
+        self.autostart_action.setChecked(self.auto_start)
+        self.autostart_action.triggered.connect(self.toggle_autostart)
+        
+        tray_menu.addSeparator()
+        
         self.tray_icon.setContextMenu(tray_menu)
         self.tray_icon.show()
         
@@ -699,7 +715,7 @@ class TrojanUrlViewer(QWidget):
                 result = sock.connect_ex(('127.0.0.1', port))
                 sock.close()
                 if result == 0:
-                    self.status_browser.append(f"错误：端口 {port} 已被占用，请先关闭占用该端口的程序")
+                    self.status_browser.append(f"错误端口 {port} 已被占用，请先关闭占用该端口的程序")
                     return
 
             current_index = self.node_combo.currentIndex()
@@ -733,7 +749,7 @@ class TrojanUrlViewer(QWidget):
             self.save_config()
             
         except Exception as e:
-            self.status_browser.append(f"启动代理时发生错误: {str(e)}")
+            self.status_browser.append(f"动代理时发生错误: {str(e)}")
             self.start_button.setEnabled(True)
             self.stop_button.setEnabled(False)
 
@@ -772,13 +788,13 @@ class TrojanUrlViewer(QWidget):
         self.save_config()
 
     def on_parse_click_with_callback(self, config):
-        """获取节点后，根据保存的节点信息选择正确的节点"""
+        """获取节点，根据保存的节点信息选择正确的节点"""
         def select_saved_node():
             try:
                 if 'last_node_info' in config and config['last_node_info']:
                     saved_node = config['last_node_info']
                     print("尝试恢复的节点信息:", saved_node)  # 调试信息
-                    print("当前���用节点列表:", [(i, node['remark']) for i, node in enumerate(self.nodes)])  # 调试信息
+                    print("当前用节点列表:", [(i, node['remark']) for i, node in enumerate(self.nodes)])  # 调试信息
                     
                     # 查找匹配的节点
                     for i, node in enumerate(self.nodes):
@@ -799,8 +815,123 @@ class TrojanUrlViewer(QWidget):
         # 增加延时时间，确保节点完全加载
         QTimer.singleShot(2000, select_saved_node)  # 延长等待时间到2
 
+    def setup_autostart(self):
+        """配置开机自启动"""
+        try:
+            startup_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+            app_path = sys.executable
+            
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, startup_path, 0, 
+                              winreg.KEY_ALL_ACCESS) as key:
+                try:
+                    winreg.QueryValueEx(key, "ProxyByUrl")
+                    self.auto_start = True
+                except:
+                    self.auto_start = False
+        except Exception as e:
+            print(f"检查自启动状态时出错: {e}")
+
+    def toggle_autostart(self):
+        """切换开机自启动状态"""
+        try:
+            startup_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+            app_path = sys.executable
+            
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, startup_path, 0, 
+                              winreg.KEY_ALL_ACCESS) as key:
+                if self.auto_start:
+                    winreg.DeleteValue(key, "ProxyByUrl")
+                    self.auto_start = False
+                else:
+                    winreg.SetValueEx(key, "ProxyByUrl", 0, winreg.REG_SZ, app_path)
+                    self.auto_start = True
+        except Exception as e:
+            print(f"设置自启动时出错: {e}")
+
+    def setup_firewall_rules(self):
+        """配置防火墙规则"""
+        try:
+            # 检查是否以管理员权限运行
+            if not self.is_admin():
+                return
+                
+            # 获取xray路径
+            if getattr(sys, 'frozen', False):
+                base_path = sys._MEIPASS
+            else:
+                base_path = os.path.dirname(os.path.abspath(__file__))
+            xray_path = os.path.join(base_path, 'xray.exe')
+            
+            # 删除已存在的规则（入站和出站）
+            subprocess.run([
+                'netsh', 'advfirewall', 'firewall', 'delete', 'rule',
+                'name=ProxyByUrl-In'
+            ], capture_output=True)
+            
+            subprocess.run([
+                'netsh', 'advfirewall', 'firewall', 'delete', 'rule',
+                'name=ProxyByUrl-Out'
+            ], capture_output=True)
+            
+            # 添加新的入站规则
+            subprocess.run([
+                'netsh', 'advfirewall', 'firewall', 'add', 'rule',
+                'name=ProxyByUrl-In',
+                'dir=in',
+                'action=allow',
+                'program=' + xray_path,
+                'enable=yes',
+                'profile=any',
+                'protocol=TCP'
+            ], capture_output=True)
+            
+            # 添加新的出站规则
+            subprocess.run([
+                'netsh', 'advfirewall', 'firewall', 'add', 'rule',
+                'name=ProxyByUrl-Out',
+                'dir=out',
+                'action=allow',
+                'program=' + xray_path,
+                'enable=yes',
+                'profile=any',
+                'protocol=TCP'
+            ], capture_output=True)
+            
+            print("防火墙规则配置成功")
+            
+        except Exception as e:
+            print(f"设置防火墙规则时出错: {e}")
+
+    def is_admin(self):
+        """检查是否具有管理员权限"""
+        try:
+            return ctypes.windll.shell32.IsUserAnAdmin()
+        except:
+            return False
+
+    def auto_connect(self):
+        """自动连接到上次使用的节点"""
+        try:
+            if self.nodes and self.node_combo.count() > 0:
+                self.start_proxy()
+        except Exception as e:
+            print(f"自动连接时出错: {e}")
+
 def main():
     try:
+        # 检查是否需要以管理员权限重启
+        if not ctypes.windll.shell32.IsUserAnAdmin():
+            # 使用runas命令以管理员权限重启程序
+            ctypes.windll.shell32.ShellExecuteW(
+                None, 
+                "runas", 
+                sys.executable, 
+                " ".join(sys.argv), 
+                None, 
+                1
+            )
+            sys.exit()
+            
         app = QApplication(sys.argv)
         
         # 检查系统是否支持系统托盘
@@ -809,15 +940,16 @@ def main():
             return
         
         # 设置退出时不自动关闭
-        app.setQuitOnLastWindowClosed(False)  # 这行很重要！
+        app.setQuitOnLastWindowClosed(False)
         
         viewer = TrojanUrlViewer()
         viewer.show()
         
         sys.exit(app.exec_())
+        
     except Exception as e:
         print(f"程序运行错误: {str(e)}")
-        input("按回车键退出...")  # 添加这行以便查看错误信息
+        input("按回车键退出...")
 
 if __name__ == '__main__':
     main()
