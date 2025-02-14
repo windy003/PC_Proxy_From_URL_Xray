@@ -482,7 +482,7 @@ class TrojanUrlViewer(QWidget):
             
             # 禁用按钮
             self.parse_button.setEnabled(False)
-            self.browser.setText("正在获取节点��息...")
+            self.browser.setText("正在获取节点信息...")
             
             # 创建新线程，添加重试机制
             self.fetch_thread = FetchThread(url, max_retries=3)  # 最多重试3次
