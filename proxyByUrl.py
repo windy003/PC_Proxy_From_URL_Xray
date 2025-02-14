@@ -727,7 +727,7 @@ class TrojanUrlViewer(QWidget):
                 result = sock.connect_ex(('127.0.0.1', port))
                 sock.close()
                 if result == 0:
-                    self.status_browser.append(f"���误端口 {port} 已被占用，请先关闭占用该端口的程序")
+                    self.status_browser.append(f"错误端口 {port} 已被占用，请先关闭占用该端口的程序")
                     return
 
             current_index = self.node_combo.currentIndex()
