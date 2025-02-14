@@ -514,7 +514,7 @@ class TrojanUrlViewer(QWidget):
                 self.save_config(save_url=False)  # 需要修改save_config方法接受参数
                 
             else:
-                print("���获取到新节点，保留现有节点")
+                print("没有获取到新节点，保留现有节点")
                 if not self.nodes:
                     self.nodes = []
                     self.node_combo.clear()
