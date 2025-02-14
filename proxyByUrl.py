@@ -37,7 +37,7 @@ class FetchThread(QThread):
     def get_node_location(self, ip):
         # 直接返回未知位置，不进行网络请求
         return "未知位置"
-        # 如果��要查询位置，可方式或缓存机制
+        # 如果需要查询位置，可方式或缓存机制
 
     def parse_nodes(self, content):
         """解析节点信息"""
@@ -309,7 +309,7 @@ class ProxyThread(QThread):
         self._is_running = False
         if self.process:
             try:
-                subprocess.run(['taskkill', '/F', '/T', '/PID', str(self.process.pid)], 
+                subprocess.run(['taskkill', '/F', '/PID', str(self.process.pid)], 
                             stdout=subprocess.PIPE, 
                             stderr=subprocess.PIPE)
             except Exception as e:
@@ -330,7 +330,6 @@ class TrojanUrlViewer(QWidget):
         self.fetch_thread = None
         self.proxy_thread = None
         self.nodes = []
-        self.auto_start = False  # 移到最前面初始化
         
         # 配置目录初始化
         self.app_data_dir = os.path.join(os.path.expanduser('~'), 'AppData', 'Local', 'ProxyByUrl')
@@ -343,7 +342,6 @@ class TrojanUrlViewer(QWidget):
         
         # 初始化顺序
         self.initUI()                  
-        self.setup_autostart()         
         self.setupSystemTray()         
         self.setup_firewall_rules()    
         self.load_saved_config()       
@@ -387,7 +385,7 @@ class TrojanUrlViewer(QWidget):
                     
                     # 恢复所有点信息
                     if 'all_nodes' in config and config['all_nodes']:
-                        print("找到已保存的所有节点��息")
+                        print("找到已保存的所有节点信息")
                         self.nodes = config['all_nodes']
                         self.node_combo.clear()
                         for node in self.nodes:
@@ -532,7 +530,7 @@ class TrojanUrlViewer(QWidget):
             print(f"更新进度时发生错误: {str(e)}")
 
     def initUI(self):
-        self.setWindowTitle('ProxyByUrl')
+        self.setWindowTitle('ProxyByUrl - 2025/2/14-01')  # 修改这行，添加版本信息
         # 移除全屏显示
         # self.showFullScreen()  # 删除这行
         
@@ -579,7 +577,7 @@ class TrojanUrlViewer(QWidget):
         node_layout.addWidget(self.node_combo)
         layout.addLayout(node_layout)
         
-        # 代理控制按���
+        # 代理控制按钮
         proxy_layout = QHBoxLayout()
         self.start_button = QPushButton('启动代理(&S)')  # 添加Alt+S快捷键
         self.stop_button = QPushButton('停止代理(&T)')   # 加Alt+T快捷键
@@ -616,7 +614,7 @@ class TrojanUrlViewer(QWidget):
             # 如果是直接运行python脚本
             application_path = os.path.dirname(os.path.abspath(__file__))
             
-        # 图标文路径
+        # 图标文件路径
         icon_path = os.path.join(application_path, 'icon.png')
         
         # 创建系统托盘图标
@@ -636,20 +634,14 @@ class TrojanUrlViewer(QWidget):
         # 添加分隔线
         tray_menu.addSeparator()
         
-        # 添加退出菜单项
-        quit_action = tray_menu.addAction('退出程序')
+        # 添加退出菜单项（带快捷键X）
+        quit_action = tray_menu.addAction('退出程序(&X)')
         quit_action.triggered.connect(self.quit_app)
-        
-        # 添加自启动菜单项
-        self.autostart_action = tray_menu.addAction('开机自启动')
-        self.autostart_action.setCheckable(True)
-        self.autostart_action.setChecked(self.auto_start)
-        self.autostart_action.triggered.connect(self.toggle_autostart)
         
         tray_menu.addSeparator()
         
         # 修改托盘图标的提示信息
-        self.tray_icon.setToolTip('ProxyByUrl (运行中)')
+        self.tray_icon.setToolTip('ProxyByUrl - 2025/2/14-01 (运行中)')
         
         # 添加状态显示到托盘菜单
         self.status_action = tray_menu.addAction('状态: 未连接')
@@ -663,20 +655,43 @@ class TrojanUrlViewer(QWidget):
         # 添加托盘图标双击事件
         self.tray_icon.activated.connect(self.tray_icon_activated)
 
-    def toggle_window(self):
-        """切换窗口显示状态"""
-        if self.isVisible():
-            self.hide()
-            self.show_action.setText('显示主窗口')
-        else:
-            self.show()
-            self.activateWindow()
-            self.show_action.setText('隐藏主窗口')
-
     def tray_icon_activated(self, reason):
         """处理托盘图标的点击事件"""
-        if reason == QSystemTrayIcon.DoubleClick:
-            self.toggle_window()
+        try:
+            if reason == QSystemTrayIcon.DoubleClick:
+                # 确保窗口状态正确
+                if not self.isVisible():
+                    self.show()
+                    self.activateWindow()  # 激活窗口
+                    self.raise_()  # 将窗口提升到顶层
+                    self.show_action.setText('隐藏主窗口')
+                else:
+                    self.hide()
+                    self.show_action.setText('显示主窗口')
+        except Exception as e:
+            print(f"处理托盘图标点击事件时出错: {e}")
+            # 发生错误时强制显示窗口
+            self.show()
+            self.activateWindow()
+            self.raise_()
+
+    def toggle_window(self):
+        """切换窗口显示状态"""
+        try:
+            if self.isVisible():
+                self.hide()
+                self.show_action.setText('显示主窗口')
+            else:
+                self.show()
+                self.activateWindow()  # 激活窗口
+                self.raise_()  # 将窗口提升到顶层
+                self.show_action.setText('隐藏主窗口')
+        except Exception as e:
+            print(f"切换窗口显示状态时出错: {e}")
+            # 发生错误时强制显示窗口
+            self.show()
+            self.activateWindow()
+            self.raise_()
 
     def quit_app(self):
         """完全退出程序"""
@@ -829,39 +844,6 @@ class TrojanUrlViewer(QWidget):
         # 增加延时时间，确保节点完全加载
         QTimer.singleShot(2000, select_saved_node)  # 延长等待时间到2
 
-    def setup_autostart(self):
-        """配置开机自启动"""
-        try:
-            startup_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
-            app_path = sys.executable
-            
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, startup_path, 0, 
-                              winreg.KEY_ALL_ACCESS) as key:
-                try:
-                    winreg.QueryValueEx(key, "ProxyByUrl")
-                    self.auto_start = True
-                except:
-                    self.auto_start = False
-        except Exception as e:
-            print(f"检查自启动状态时出错: {e}")
-
-    def toggle_autostart(self):
-        """切换开机自启动状态"""
-        try:
-            startup_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
-            app_path = sys.executable
-            
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, startup_path, 0, 
-                              winreg.KEY_ALL_ACCESS) as key:
-                if self.auto_start:
-                    winreg.DeleteValue(key, "ProxyByUrl")
-                    self.auto_start = False
-                else:
-                    winreg.SetValueEx(key, "ProxyByUrl", 0, winreg.REG_SZ, app_path)
-                    self.auto_start = True
-        except Exception as e:
-            print(f"设置自启动时出错: {e}")
-
     def setup_firewall_rules(self):
         """配置防火墙规则"""
         try:
@@ -960,6 +942,25 @@ def main():
             sys.exit()
             
         app = QApplication(sys.argv)
+        
+        # 添加全局样式表设置
+        app.setStyleSheet("""
+            QWidget {
+                font-size: 12pt;
+            }
+            QTextBrowser {
+                font-size: 11pt;
+            }
+            QComboBox {
+                font-size: 11pt;
+            }
+            QLineEdit {
+                font-size: 11pt;
+            }
+            QPushButton {
+                font-size: 11pt;
+            }
+        """)
         
         if not QSystemTrayIcon.isSystemTrayAvailable():
             sys.exit(1)
