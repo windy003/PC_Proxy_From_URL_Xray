@@ -122,19 +122,19 @@ class FetchThread(QThread):
                 'Upgrade-Insecure-Requests': '1'
             }
             
-            # 添加重试机制
+            # 添加更强大的重试机制
             for attempt in range(self.max_retries):
                 try:
-                    # 发送请求时headers
+                    # 设置更长的超时时间
                     response = requests.get(
                         self.url, 
                         headers=headers,
                         verify=False, 
-                        timeout=10
+                        timeout=30,  # 增加超时时间到30秒
+                        allow_redirects=True  # 允许重定向
                     )
                     
                     if response.status_code == 200:
-                        # 解析订阅内容
                         content = response.text.strip()
                         if content:
                             try:
@@ -147,29 +147,41 @@ class FetchThread(QThread):
                                 self.progress.emit(f"解析内容失败: {str(e)}")
                         
                         if attempt < self.max_retries - 1:
-                            self.progress.emit(f"未获取到有效节点，正在重试... ({attempt + 1}/{self.max_retries})")
-                            time.sleep(2)
+                            wait_time = (attempt + 1) * 2  # 递增等待时间
+                            self.progress.emit(f"未获取到有效节点，{wait_time}秒后重试... ({attempt + 1}/{self.max_retries})")
+                            time.sleep(wait_time)
                             continue
                         else:
-                            self.finished.emit("未能获取到效点")
+                            self.finished.emit("未能获取到有效节点")
                     else:
                         if attempt < self.max_retries - 1:
-                            self.progress.emit(f"请求失败，状态码: {response.status_code}，正在重试... ({attempt + 1}/{self.max_retries})")
-                            time.sleep(2)
+                            wait_time = (attempt + 1) * 2
+                            self.progress.emit(f"请求失败(状态码: {response.status_code})，{wait_time}秒后重试... ({attempt + 1}/{self.max_retries})")
+                            time.sleep(wait_time)
                             continue
                         else:
                             self.finished.emit(f"请求失败，状态码: {response.status_code}")
                             
-                except requests.exceptions.RequestException as e:
+                except requests.exceptions.ProxyError as e:
                     if attempt < self.max_retries - 1:
-                        self.progress.emit(f"网络请求错误: {str(e)}，正在重试... ({attempt + 1}/{self.max_retries})")
-                        time.sleep(2)
+                        wait_time = (attempt + 1) * 2
+                        self.progress.emit(f"代理连接错误，{wait_time}秒后重试... ({attempt + 1}/{self.max_retries})")
+                        time.sleep(wait_time)
                         continue
                     else:
-                        self.finished.emit(f"网络请求错误: {str(e)}")
+                        self.finished.emit("代理连接失败，请检查网络设置或关闭系统代理后重试")
+                        
+                except requests.exceptions.RequestException as e:
+                    if attempt < self.max_retries - 1:
+                        wait_time = (attempt + 1) * 2
+                        self.progress.emit(f"网络请求错误: {str(e)}，{wait_time}秒后重试... ({attempt + 1}/{self.max_retries})")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        self.finished.emit(f"网络请求失败，请检查网络连接")
                         
         except Exception as e:
-            self.finished.emit(f"发生错误: {str(e)}")
+            self.finished.emit(f"发生未知错误: {str(e)}")
 
 class ProxyThread(QThread):
     status_update = pyqtSignal(str)
@@ -530,7 +542,7 @@ class TrojanUrlViewer(QWidget):
             print(f"更新进度时发生错误: {str(e)}")
 
     def initUI(self):
-        self.setWindowTitle('ProxyByUrl - 2025/2/14-01')  # 修改这行，添加版本信息
+        self.setWindowTitle('ProxyByUrl - 2025/2/23-01')  # 修改这行，添加版本信息
         # 移除全屏显示
         # self.showFullScreen()  # 删除这行
         
@@ -640,8 +652,6 @@ class TrojanUrlViewer(QWidget):
         
         tray_menu.addSeparator()
         
-        # 修改托盘图标的提示信息
-        self.tray_icon.setToolTip('ProxyByUrl - 2025/2/14-01 (运行中)')
         
         # 添加状态显示到托盘菜单
         self.status_action = tray_menu.addAction('状态: 未连接')
