@@ -2,10 +2,10 @@
 
 
 a = Analysis(
-    ['proxyByUrl.py'],
+    ['1.py'],
     pathex=[],
     binaries=[],
-    datas=[('icon.png', '.'), ('icon.ico', '.'), ('xray.exe', '.')],
+    datas=[('icon.ico', '.'), ('icon.png', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -22,7 +22,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='ProxyByUrl',
+    name='proxyByUrl',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -35,6 +35,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    uac_admin=True,
-    icon=['icon.png'],
+    icon=['icon.ico'],
 )

@@ -433,6 +433,10 @@ class TrojanUrlViewer(QWidget):
                             if 0 <= last_index < len(self.nodes):
                                 self.node_combo.setCurrentIndex(last_index)
 
+                    # 恢复HTTP端口设置
+                    if 'http_port' in config and hasattr(self, 'port_input'):
+                        self.port_input.setText(config['http_port'])
+
         except Exception as e:
             print(f"加载应用配置时出错: {e}")
 
@@ -469,6 +473,10 @@ class TrojanUrlViewer(QWidget):
                     'all_nodes': self.nodes,
                     'auto_connect': True
                 }
+                
+                # 保存HTTP端口设置
+                if hasattr(self, 'port_input'):
+                    config['http_port'] = self.port_input.text().strip()
                 
                 if save_url:
                     config['last_url'] = self.input_box.text()
@@ -613,6 +621,19 @@ class TrojanUrlViewer(QWidget):
         node_layout.addWidget(self.node_combo)
         layout.addLayout(node_layout)
         
+        # 添加HTTP端口输入区域
+        port_layout = QHBoxLayout()
+        port_label = QLabel('HTTP端口(&P)：')
+        self.port_input = QLineEdit()
+        self.port_input.setPlaceholderText('留空使用随机端口')
+        self.port_input.setText('')  # 默认为空
+        self.port_input.setMaximumWidth(150)
+        port_label.setBuddy(self.port_input)
+        port_layout.addWidget(port_label)
+        port_layout.addWidget(self.port_input)
+        port_layout.addStretch()  # 添加弹性空间
+        layout.addLayout(port_layout)
+        
         # 代理控制按钮
         proxy_layout = QHBoxLayout()
         self.start_button = QPushButton('启动代理(&S)')  # 添加Alt+S快捷键
@@ -621,13 +642,9 @@ class TrojanUrlViewer(QWidget):
         self.stop_button.clicked.connect(self.stop_proxy)
         self.stop_button.setEnabled(False)
         
-        # 添加全屏切换按钮
-        self.fullscreen_button = QPushButton('切换全屏(&F)')  # 添加Alt+F快捷键
-        self.fullscreen_button.clicked.connect(self.toggle_fullscreen)
         
         proxy_layout.addWidget(self.start_button)
         proxy_layout.addWidget(self.stop_button)
-        proxy_layout.addWidget(self.fullscreen_button)
         layout.addLayout(proxy_layout)
         
         # 状态显示区域 (移到按钮下方)
@@ -798,15 +815,31 @@ class TrojanUrlViewer(QWidget):
             # 停止现有代理
             self.stop_proxy()
             
-            # 使用随机端口
-            self.status_browser.append("尝试使用随机高端口启动代理...")
+            # 获取用户输入的端口
+            http_port = None
+            if hasattr(self, 'port_input') and self.port_input.text().strip():
+                try:
+                    port_text = self.port_input.text().strip()
+                    port_num = int(port_text)
+                    if 1024 <= port_num <= 65535:  # 有效端口范围检查
+                        http_port = port_num
+                    else:
+                        self.status_browser.append(f"端口 {port_num} 超出有效范围(1024-65535)，将使用随机端口")
+                except ValueError:
+                    self.status_browser.append("端口格式无效，将使用随机端口")
             
-            # 启动新代理，不指定具体端口，让ProxyThread自行选择随机端口
+            if http_port:
+                self.status_browser.append(f"尝试使用指定端口 {http_port} 启动代理...")
+            else:
+                self.status_browser.append("尝试使用随机高端口启动代理...")
+            
+            # 启动新代理，根据用户输入决定是否使用指定端口
             self.proxy_thread = ProxyThread(
                 node_info['host'], 
                 node_info['port'], 
                 node_info['password'], 
-                node_info.get('sni')
+                node_info.get('sni'),
+                http_port  # 传入用户指定的端口，如果为None则使用随机端口
             )
             self.proxy_thread.status_update.connect(self.update_proxy_status)
             self.proxy_thread.start()
