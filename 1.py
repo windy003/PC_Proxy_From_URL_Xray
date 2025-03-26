@@ -596,8 +596,14 @@ class TrojanUrlViewer(QWidget):
         self.start_button.clicked.connect(self.start_proxy)
         self.stop_button.clicked.connect(self.stop_proxy)
         self.stop_button.setEnabled(False)
+        
+        # 添加全屏切换按钮
+        self.fullscreen_button = QPushButton('切换全屏(&F)')  # 添加Alt+F快捷键
+        self.fullscreen_button.clicked.connect(self.toggle_fullscreen)
+        
         proxy_layout.addWidget(self.start_button)
         proxy_layout.addWidget(self.stop_button)
+        proxy_layout.addWidget(self.fullscreen_button)
         layout.addLayout(proxy_layout)
         
         # 状态显示区域 (移到按钮下方)
@@ -606,10 +612,23 @@ class TrojanUrlViewer(QWidget):
         self.status_label = QLabel('代理状态：未运行')
         self.status_browser = QTextBrowser()
         self.status_browser.setMaximumHeight(150)
-        status_layout.addWidget(self.status_label)
+        
+        # 添加状态区域的全屏切换按钮
+        status_header_layout = QHBoxLayout()
+        status_header_layout.addWidget(self.status_label)
+        status_fullscreen_button = QPushButton("全屏(&Z)")
+        status_fullscreen_button.clicked.connect(self.toggle_status_fullscreen)
+        status_header_layout.addWidget(status_fullscreen_button)
+        
+        status_layout.addLayout(status_header_layout)
         status_layout.addWidget(self.status_browser)
         status_group.setLayout(status_layout)
         layout.addWidget(status_group)
+        
+        # 保存状态区域原始大小的引用
+        self.status_browser_original_height = self.status_browser.maximumHeight()
+        self.status_group = status_group
+        self.status_fullscreen_button = status_fullscreen_button
         
         # 节点信息显示区域
         self.browser = QTextBrowser()
@@ -922,6 +941,38 @@ class TrojanUrlViewer(QWidget):
                 self.start_proxy()
         except Exception as e:
             print(f"自动连接时出错: {e}")
+
+    def toggle_fullscreen(self):
+        """切换全屏与非全屏状态"""
+        try:
+            if self.isFullScreen():
+                self.showNormal()
+                self.fullscreen_button.setText('切换全屏(&F)')
+            else:
+                self.showFullScreen()
+                self.fullscreen_button.setText('退出全屏(&F)')
+        except Exception as e:
+            print(f"切换全屏状态时出错: {e}")
+
+    def toggle_status_fullscreen(self):
+        """切换状态区域的全屏显示"""
+        try:
+            if self.status_browser.maximumHeight() == 16777215:  # 这是Qt的QWIDGETSIZE_MAX
+                # 恢复正常大小
+                self.status_browser.setMaximumHeight(self.status_browser_original_height)
+                self.browser.show()  # 显示节点信息区域
+                self.status_fullscreen_button.setText("全屏(&Z)")
+            else:
+                # 设置为全屏大小
+                self.status_browser.setMaximumHeight(16777215)  # QWIDGETSIZE_MAX
+                self.browser.hide()  # 隐藏节点信息区域以腾出更多空间
+                self.status_fullscreen_button.setText("还原(&Z)")
+            
+            # 刷新界面布局
+            self.layout().activate()
+            
+        except Exception as e:
+            print(f"切换状态区域全屏显示时出错: {e}")
 
 def main():
     try:
