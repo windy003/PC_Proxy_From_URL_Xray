@@ -638,13 +638,16 @@ class TrojanUrlViewer(QWidget):
         proxy_layout = QHBoxLayout()
         self.start_button = QPushButton('启动代理(&S)')  # 添加Alt+S快捷键
         self.stop_button = QPushButton('停止代理(&T)')   # 加Alt+T快捷键
+        self.restart_button = QPushButton('重启连接(&R)')  # 添加重启按钮，带Alt+R快捷键
         self.start_button.clicked.connect(self.start_proxy)
         self.stop_button.clicked.connect(self.stop_proxy)
+        self.restart_button.clicked.connect(self.restart_proxy)  # 连接重启功能
         self.stop_button.setEnabled(False)
-        
-        
+        self.restart_button.setEnabled(False)  # 初始时禁用重启按钮
+
         proxy_layout.addWidget(self.start_button)
         proxy_layout.addWidget(self.stop_button)
+        proxy_layout.addWidget(self.restart_button)  # 添加到布局
         layout.addLayout(proxy_layout)
         
         # 状态显示区域 (移到按钮下方)
@@ -705,6 +708,10 @@ class TrojanUrlViewer(QWidget):
         
         # 添加分隔线
         tray_menu.addSeparator()
+        
+        # 添加重启代理菜单项
+        restart_action = tray_menu.addAction('重启代理(&R)')
+        restart_action.triggered.connect(self.restart_proxy)
         
         # 添加退出菜单项（带快捷键X）
         quit_action = tray_menu.addAction('退出程序(&X)')
@@ -846,6 +853,7 @@ class TrojanUrlViewer(QWidget):
             
             self.start_button.setEnabled(False)
             self.stop_button.setEnabled(True)
+            self.restart_button.setEnabled(True)  # 启用重启按钮
             
             # 稍微延迟一下更新状态，等待端口确定
             QTimer.singleShot(500, lambda: self.update_proxy_port_status())
@@ -857,7 +865,8 @@ class TrojanUrlViewer(QWidget):
             self.status_browser.append(f"启动代理时发生错误: {str(e)}")
             self.start_button.setEnabled(True)
             self.stop_button.setEnabled(False)
-            
+            self.restart_button.setEnabled(False)  # 禁用重启按钮
+
     def update_proxy_port_status(self):
         """更新代理端口状态信息"""
         try:
@@ -886,6 +895,7 @@ class TrojanUrlViewer(QWidget):
             
             self.start_button.setEnabled(True)
             self.stop_button.setEnabled(False)
+            self.restart_button.setEnabled(False)  # 禁用重启按钮
             self.status_label.setText("代理状态：未运行")
             
         except Exception as e:
@@ -1008,10 +1018,8 @@ class TrojanUrlViewer(QWidget):
         try:
             if self.isFullScreen():
                 self.showNormal()
-                self.fullscreen_button.setText('切换全屏(&F)')
             else:
                 self.showFullScreen()
-                self.fullscreen_button.setText('退出全屏(&F)')
         except Exception as e:
             print(f"切换全屏状态时出错: {e}")
 
@@ -1034,6 +1042,40 @@ class TrojanUrlViewer(QWidget):
             
         except Exception as e:
             print(f"切换状态区域全屏显示时出错: {e}")
+
+    def restart_proxy(self):
+        """重启代理连接"""
+        try:
+            self.status_browser.append("正在重启代理连接...")
+            
+            # 保存当前节点索引和端口
+            current_index = self.node_combo.currentIndex()
+            current_port = None
+            if hasattr(self, 'port_input') and self.port_input.text().strip():
+                current_port = self.port_input.text().strip()
+            
+            # 先停止代理
+            self.stop_proxy()
+            
+            # 等待一小段时间确保进程完全结束
+            time.sleep(1)
+            
+            # 恢复之前的节点选择
+            if current_index >= 0 and current_index < self.node_combo.count():
+                self.node_combo.setCurrentIndex(current_index)
+            
+            # 恢复之前的端口设置
+            if current_port and hasattr(self, 'port_input'):
+                self.port_input.setText(current_port)
+            
+            # 重新启动代理
+            self.start_proxy()
+            
+        except Exception as e:
+            self.status_browser.append(f"重启代理时发生错误: {str(e)}")
+            self.start_button.setEnabled(True)
+            self.stop_button.setEnabled(False)
+            self.restart_button.setEnabled(False)
 
 def main():
     try:
