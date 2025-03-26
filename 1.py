@@ -19,6 +19,7 @@ from PyQt5.QtWidgets import QShortcut
 from PyQt5.QtGui import QKeySequence
 import winreg
 import ctypes
+import random
 
 class FetchThread(QThread):
     finished = pyqtSignal(str)
@@ -186,12 +187,14 @@ class FetchThread(QThread):
 class ProxyThread(QThread):
     status_update = pyqtSignal(str)
 
-    def __init__(self, server, port, password, sni=None):
+    def __init__(self, server, port, password, sni=None, http_port=None):
         super().__init__()
         self.server = server
         self.port = port
         self.password = password
         self.sni = sni
+        # 如果没有指定端口，选择一个随机高端口
+        self.http_port = http_port if http_port else self.get_random_port()
         self._is_running = True
         self.process = None
         
@@ -200,12 +203,32 @@ class ProxyThread(QThread):
         if not os.path.exists(self.app_data_dir):
             os.makedirs(self.app_data_dir)
 
+    def get_random_port(self):
+        """获取一个随机的可用高端口"""
+        # 尝试最多10次找到一个可用端口
+        for _ in range(10):
+            # 选择一个20000-65000之间的随机端口
+            random_port = random.randint(20000, 65000)
+            
+            # 检查端口是否可用
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            result = sock.connect_ex(('127.0.0.1', random_port))
+            sock.close()
+            
+            # 如果端口可用 (connect_ex返回非零结果表示连接失败，即端口可能未被使用)
+            if result != 0:
+                return random_port
+                
+        # 如果没有找到可用端口，返回一个常规的高端口
+        return 20809
+
     def run(self):
         try:
             if not self._is_running:
                 return
 
             self.status_update.emit("开始配置代理服务...")
+            self.status_update.emit(f"将使用HTTP代理端口: {self.http_port}")
             
             # 获取正确的xray路径
             if getattr(sys, 'frozen', False):
@@ -224,18 +247,12 @@ class ProxyThread(QThread):
             # 使用用户目录的xray配置文件
             config_path = os.path.join(self.app_data_dir, 'xray_config.json')
             
-            # Xray 配置
+            # Xray 配置 - 只使用HTTP代理
             config = {
                 "inbounds": [
                     {
-                        "port": 10808,
-                        "protocol": "socks",
-                        "settings": {
-                            "udp": True
-                        }
-                    },
-                    {
-                        "port": 10809,
+                        "port": self.http_port,
+                        "listen": "127.0.0.1",  # 仅监听本地地址
                         "protocol": "http"
                     }
                 ],
@@ -316,6 +333,13 @@ class ProxyThread(QThread):
 
         except Exception as e:
             self.status_update.emit(f"代理线程错误: {str(e)}")
+
+    def is_admin(self):
+        """检查是否有管理员权限"""
+        try:
+            return ctypes.windll.shell32.IsUserAnAdmin()
+        except:
+            return False
 
     def stop(self):
         self._is_running = False
@@ -542,7 +566,7 @@ class TrojanUrlViewer(QWidget):
             print(f"更新进度时发生错误: {str(e)}")
 
     def initUI(self):
-        self.setWindowTitle('ProxyByUrl - 2025/2/23-01')  # 修改这行，添加版本信息
+        self.setWindowTitle('ProxyByUrl - 2025/3/26-01')  # 修改这行，添加版本信息
         # 移除全屏显示
         # self.showFullScreen()  # 删除这行
         
@@ -764,16 +788,6 @@ class TrojanUrlViewer(QWidget):
             # 等待一小段时间确保进程完全结束
             time.sleep(1)
             
-            # 检查端口是否被占用
-            ports_to_check = [10808, 10809]
-            for port in ports_to_check:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                result = sock.connect_ex(('127.0.0.1', port))
-                sock.close()
-                if result == 0:
-                    self.status_browser.append(f"错误端口 {port} 已被占用，请先关闭占用该端口的程序")
-                    return
-
             current_index = self.node_combo.currentIndex()
             if current_index < 0 or not self.nodes:
                 self.status_browser.append("请先选择节点")
@@ -784,30 +798,51 @@ class TrojanUrlViewer(QWidget):
             # 停止现有代理
             self.stop_proxy()
             
-            # 启动新代理
-            self.proxy_thread = ProxyThread(node_info['host'], node_info['port'], node_info['password'], node_info.get('sni'))
+            # 使用随机端口
+            self.status_browser.append("尝试使用随机高端口启动代理...")
+            
+            # 启动新代理，不指定具体端口，让ProxyThread自行选择随机端口
+            self.proxy_thread = ProxyThread(
+                node_info['host'], 
+                node_info['port'], 
+                node_info['password'], 
+                node_info.get('sni')
+            )
             self.proxy_thread.status_update.connect(self.update_proxy_status)
             self.proxy_thread.start()
             
             self.start_button.setEnabled(False)
             self.stop_button.setEnabled(True)
             
-            # 更新状态标显示代理信息
-            status_text = (
-                f"代理状态：运行中\n"
-                f"SOCKS5: 127.0.0.1:10808\n"
-                f"HTTP: 127.0.0.1:10809\n"
-                f"节点: {node_info['remark']}"
-            )
-            self.status_label.setText(status_text)
+            # 稍微延迟一下更新状态，等待端口确定
+            QTimer.singleShot(500, lambda: self.update_proxy_port_status())
             
             # 保存当前配置
             self.save_config()
             
         except Exception as e:
-            self.status_browser.append(f"动代理时发生错误: {str(e)}")
+            self.status_browser.append(f"启动代理时发生错误: {str(e)}")
             self.start_button.setEnabled(True)
             self.stop_button.setEnabled(False)
+            
+    def update_proxy_port_status(self):
+        """更新代理端口状态信息"""
+        try:
+            if self.proxy_thread and hasattr(self.proxy_thread, 'http_port'):
+                http_port = self.proxy_thread.http_port
+                node_index = self.node_combo.currentIndex()
+                if node_index >= 0 and self.nodes:
+                    node_info = self.nodes[node_index]
+                    # 更新状态标签显示代理信息
+                    status_text = (
+                        f"代理状态：运行中\n"
+                        f"HTTP: 127.0.0.1:{http_port}\n"
+                        f"节点: {node_info['remark']}"
+                    )
+                    self.status_label.setText(status_text)
+                    self.status_browser.append(f"HTTP代理已启动在端口: {http_port}")
+        except Exception as e:
+            print(f"更新代理端口状态时出错: {e}")
 
     def stop_proxy(self):
         try:
@@ -926,13 +961,6 @@ class TrojanUrlViewer(QWidget):
             
         except Exception as e:
             print(f"设置防火墙规则时出错: {e}")
-
-    def is_admin(self):
-        """检查是否具有管理员权限"""
-        try:
-            return ctypes.windll.shell32.IsUserAnAdmin()
-        except:
-            return False
 
     def auto_connect(self):
         """自动连接到上次使用的节点"""
