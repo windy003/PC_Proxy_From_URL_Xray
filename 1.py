@@ -212,7 +212,7 @@ class ProxyThread(QThread):
             
             # 检查端口是否可用
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            result = sock.connect_ex(('127.0.0.1', random_port))
+            result = sock.connect_ex(('0.0.0.0', random_port))
             sock.close()
             
             # 如果端口可用 (connect_ex返回非零结果表示连接失败，即端口可能未被使用)
@@ -252,7 +252,7 @@ class ProxyThread(QThread):
                 "inbounds": [
                     {
                         "port": self.http_port,
-                        "listen": "127.0.0.1",  # 仅监听本地地址
+                        "listen": "0.0.0.0",  # 仅监听本地地址
                         "protocol": "http"
                     }
                 ],
@@ -574,7 +574,7 @@ class TrojanUrlViewer(QWidget):
             print(f"更新进度时发生错误: {str(e)}")
 
     def initUI(self):
-        self.setWindowTitle('ProxyByUrl - 2025/3/26-01')  # 修改这行，添加版本信息
+        self.setWindowTitle('ProxyByUrl - 2025/3/28-01')  # 修改这行，添加版本信息
         # 移除全屏显示
         # self.showFullScreen()  # 删除这行
         
@@ -878,7 +878,7 @@ class TrojanUrlViewer(QWidget):
                     # 更新状态标签显示代理信息
                     status_text = (
                         f"代理状态：运行中\n"
-                        f"HTTP: 127.0.0.1:{http_port}\n"
+                        f"HTTP: 0.0.0.0:{http_port}\n"
                         f"节点: {node_info['remark']}"
                     )
                     self.status_label.setText(status_text)
