@@ -230,19 +230,36 @@ class ProxyThread(QThread):
             self.status_update.emit("开始配置代理服务...")
             self.status_update.emit(f"将使用HTTP代理端口: {self.http_port}")
             
-            # 获取正确的xray路径
+            # 改为使用固定目录中的xray.exe
+            xray_dest_path = os.path.join(self.app_data_dir, 'xray.exe')
+            
+            # 获取原始xray路径
             if getattr(sys, 'frozen', False):
                 # 如果是打包后的exe运行
                 base_path = sys._MEIPASS
             else:
                 # 如果是直接运行python脚本
                 base_path = os.path.dirname(os.path.abspath(__file__))
-                
-            xray_path = os.path.join(base_path, 'xray.exe')
             
-            if not os.path.exists(xray_path):
+            xray_src_path = os.path.join(base_path, 'xray.exe')
+            
+            # 如果固定目录中不存在xray.exe，则复制一份
+            if not os.path.exists(xray_dest_path):
+                if os.path.exists(xray_src_path):
+                    import shutil
+                    shutil.copy2(xray_src_path, xray_dest_path)
+                    self.status_update.emit("已将xray.exe复制到固定目录")
+                else:
+                    self.status_update.emit("错误: 找不到xray.exe，请确保xray.exe与程序在同一目录")
+                    return
+            
+            # 使用固定目录中的xray.exe
+            if not os.path.exists(xray_dest_path):
                 self.status_update.emit("错误: 找不到xray.exe，请确保xray.exe与程序在同一目录")
                 return
+            
+            # 其余代码保持不变，只需将xray_path替换为xray_dest_path
+            xray_path = xray_dest_path
             
             # 使用用户目录的xray配置文件
             config_path = os.path.join(self.app_data_dir, 'xray_config.json')
@@ -574,7 +591,7 @@ class TrojanUrlViewer(QWidget):
             print(f"更新进度时发生错误: {str(e)}")
 
     def initUI(self):
-        self.setWindowTitle('ProxyByUrl - 2025/3/28-01')  # 修改这行，添加版本信息
+        self.setWindowTitle('ProxyByUrl - 2025/3/30-01')  # 修改这行，添加版本信息
         # 移除全屏显示
         # self.showFullScreen()  # 删除这行
         
@@ -1079,16 +1096,7 @@ class TrojanUrlViewer(QWidget):
 
 def main():
     try:
-        # 检查是否已经运行
-        socket_name = "ProxyByUrlSingleInstance"
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.bind(('localhost', 12345))  # 使用特定端口检查
-        except socket.error:
-            print("程序已经在运行")
-            sys.exit(0)
-            
-        # 检查管理员权限
+        # 检查是否以管理员权限运行
         if not ctypes.windll.shell32.IsUserAnAdmin():
             # 使用 CREATE_NO_WINDOW 标志启动新进程
             startupinfo = subprocess.STARTUPINFO()
