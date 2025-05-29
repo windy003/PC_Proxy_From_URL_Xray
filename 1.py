@@ -1,3 +1,7 @@
+# self.app_config_file = os.path.join(self.app_data_dir, 'app_config.json')
+
+
+
 import base64
 import sys
 import json
