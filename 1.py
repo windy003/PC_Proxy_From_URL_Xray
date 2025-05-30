@@ -595,7 +595,7 @@ class TrojanUrlViewer(QWidget):
             print(f"更新进度时发生错误: {str(e)}")
 
     def initUI(self):
-        self.setWindowTitle('ProxyByUrl - 2025/3/30-01')  # 修改这行，添加版本信息
+        self.setWindowTitle('ProxyByUrl - 2025/5/30-01')  # 修改这行，添加版本信息
         # 移除全屏显示
         # self.showFullScreen()  # 删除这行
         
@@ -752,41 +752,89 @@ class TrojanUrlViewer(QWidget):
         
         # 添加托盘图标双击事件
         self.tray_icon.activated.connect(self.tray_icon_activated)
+        
+        # 添加定时器来检查托盘图标状态
+        self.tray_check_timer = QTimer()
+        self.tray_check_timer.timeout.connect(self.check_tray_status)
+        self.tray_check_timer.start(5000)  # 每5秒检查一次
 
     def tray_icon_activated(self, reason):
         """处理托盘图标的点击事件"""
         try:
             if reason == QSystemTrayIcon.DoubleClick:
-                # 确保窗口状态正确
-                if not self.isVisible():
+                # 改进的窗口唤醒逻辑
+                if not self.isVisible() or self.isMinimized():
+                    # 强制显示并激活窗口
+                    self.setWindowState(self.windowState() & ~Qt.WindowMinimized | Qt.WindowActive)
                     self.show()
-                    self.activateWindow()  # 激活窗口
-                    self.raise_()  # 将窗口提升到顶层
+                    self.activateWindow()
+                    self.raise_()
+                    
+                    # Windows特定的窗口激活方法
+                    if sys.platform == 'win32':
+                        try:
+                            import ctypes
+                            from ctypes import wintypes
+                            
+                            # 获取窗口句柄
+                            hwnd = int(self.winId())
+                            
+                            # 强制将窗口带到前台
+                            ctypes.windll.user32.SetForegroundWindow(hwnd)
+                            ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                            ctypes.windll.user32.SetActiveWindow(hwnd)
+                            
+                        except Exception as e:
+                            print(f"Windows特定激活失败: {e}")
+                    
                     self.show_action.setText('隐藏主窗口')
                 else:
                     self.hide()
                     self.show_action.setText('显示主窗口')
+                
         except Exception as e:
             print(f"处理托盘图标点击事件时出错: {e}")
-            # 发生错误时强制显示窗口
-            self.show()
-            self.activateWindow()
-            self.raise_()
+            # 发生错误时的备用方案
+            try:
+                self.setWindowState(Qt.WindowNoState)
+                self.show()
+                self.activateWindow()
+                self.raise_()
+                if sys.platform == 'win32':
+                    import ctypes
+                    hwnd = int(self.winId())
+                    ctypes.windll.user32.SetForegroundWindow(hwnd)
+            except:
+                pass
 
     def toggle_window(self):
         """切换窗口显示状态"""
         try:
-            if self.isVisible():
+            if self.isVisible() and not self.isMinimized():
                 self.hide()
                 self.show_action.setText('显示主窗口')
             else:
+                # 使用改进的显示逻辑
+                self.setWindowState(self.windowState() & ~Qt.WindowMinimized | Qt.WindowActive)
                 self.show()
-                self.activateWindow()  # 激活窗口
-                self.raise_()  # 将窗口提升到顶层
+                self.activateWindow()
+                self.raise_()
+                
+                # Windows特定处理
+                if sys.platform == 'win32':
+                    try:
+                        import ctypes
+                        hwnd = int(self.winId())
+                        ctypes.windll.user32.SetForegroundWindow(hwnd)
+                        ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                    except:
+                        pass
+                    
                 self.show_action.setText('隐藏主窗口')
+            
         except Exception as e:
             print(f"切换窗口显示状态时出错: {e}")
-            # 发生错误时强制显示窗口
+            # 备用方案
             self.show()
             self.activateWindow()
             self.raise_()
@@ -1097,6 +1145,14 @@ class TrojanUrlViewer(QWidget):
             self.start_button.setEnabled(True)
             self.stop_button.setEnabled(False)
             self.restart_button.setEnabled(False)
+
+    def check_tray_status(self):
+        """检查托盘图标状态，确保它始终可见"""
+        try:
+            if hasattr(self, 'tray_icon') and not self.tray_icon.isVisible():
+                self.tray_icon.show()
+        except Exception as e:
+            print(f"检查托盘状态时出错: {e}")
 
 def main():
     try:
