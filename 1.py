@@ -587,7 +587,7 @@ class TrojanUrlViewer(QWidget):
             print(f"更新进度时发生错误: {str(e)}")
 
     def initUI(self):
-        self.setWindowTitle('ProxyByUrl - 2025/5/30-01')  # 修改这行，添加版本信息
+        self.setWindowTitle('ProxyByUrl - 2025/5/30-02')  # 修改这行，添加版本信息
         # 移除全屏显示
         # self.showFullScreen()  # 删除这行
         
