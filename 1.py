@@ -3,10 +3,6 @@
 # ------------------------------------------------
 # self.app_config_file = os.path.join(self.app_data_dir, 'app_config.json')
 
-# ------------------------------------------------------------------
-# xray.exe使用的可能是这个目录下的
-# 改为使用固定目录中的xray.exe
-# xray_dest_path = os.path.join(self.app_data_dir, 'xray.exe')
             
 
 import base64
