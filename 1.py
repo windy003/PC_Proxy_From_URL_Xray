@@ -41,11 +41,6 @@ class FetchThread(QThread):
     def stop(self):
         self._is_running = False
 
-    def get_node_location(self, ip):
-        # 直接返回未知位置，不进行网络请求
-        return "未知位置"
-        # 如果需要查询位置，可方式或缓存机制
-
     def parse_nodes(self, content):
         """解析节点信息"""
         try:
