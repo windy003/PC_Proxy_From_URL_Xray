@@ -715,9 +715,6 @@ class TrojanUrlViewer(QWidget):
         # 创建托盘菜单
         tray_menu = QMenu()
         
-        # 添加"显示/隐藏"菜单项
-        self.show_action = tray_menu.addAction('显示主窗口')
-        self.show_action.triggered.connect(self.toggle_window)
         
         # 添加分隔线
         tray_menu.addSeparator()
@@ -798,38 +795,6 @@ class TrojanUrlViewer(QWidget):
                     ctypes.windll.user32.SetForegroundWindow(hwnd)
             except:
                 pass
-
-    def toggle_window(self):
-        """切换窗口显示状态"""
-        try:
-            if self.isVisible() and not self.isMinimized():
-                self.hide()
-                self.show_action.setText('显示主窗口')
-            else:
-                # 使用改进的显示逻辑
-                self.setWindowState(self.windowState() & ~Qt.WindowMinimized | Qt.WindowActive)
-                self.show()
-                self.activateWindow()
-                self.raise_()
-                
-                # Windows特定处理
-                if sys.platform == 'win32':
-                    try:
-                        import ctypes
-                        hwnd = int(self.winId())
-                        ctypes.windll.user32.SetForegroundWindow(hwnd)
-                        ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-                    except:
-                        pass
-                    
-                self.show_action.setText('隐藏主窗口')
-            
-        except Exception as e:
-            print(f"切换窗口显示状态时出错: {e}")
-            # 备用方案
-            self.show()
-            self.activateWindow()
-            self.raise_()
 
     def quit_app(self):
         """完全退出程序"""
