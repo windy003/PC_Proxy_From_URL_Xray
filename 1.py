@@ -488,18 +488,6 @@ class TrojanUrlViewer(QWidget):
         except Exception as e:
             print(f"保存应用配置时出错: {e}")
 
-    def closeEvent(self, event):
-        """重写关闭事件"""
-        # 点击关闭按钮时只最小化到托盘
-        event.ignore()  # 略关闭事件
-        self.hide()     # 隐藏窗口
-        self.tray_icon.showMessage(
-            '提示',
-            '程序已最小化到系统托盘，双击图标可以重新打开窗口',
-            QSystemTrayIcon.Information,
-            2000
-        )
-
     def on_parse_click(self):
         try:
             url = self.input_box.text().strip()
