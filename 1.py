@@ -353,12 +353,6 @@ class ProxyThread(QThread):
         except Exception as e:
             self.status_update.emit(f"代理线程错误: {str(e)}")
 
-    def is_admin(self):
-        """检查是否有管理员权限"""
-        try:
-            return ctypes.windll.shell32.IsUserAnAdmin()
-        except:
-            return False
 
     def stop(self):
         self._is_running = False
