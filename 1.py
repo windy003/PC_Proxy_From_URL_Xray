@@ -453,25 +453,6 @@ class TrojanUrlViewer(QWidget):
         except Exception as e:
             print(f"加载应用配置时出错: {e}")
 
-    def clear_invalid_config(self):
-        """清除无效的配置"""
-        try:
-            # 不要立即删除配置文件，而是保留最后一次的有效配置
-            self.browser.setText("获取新节点列表失败，使用上次的配置")
-            # 如果有保存的节点，继续使用
-            if hasattr(self, 'nodes') and self.nodes:
-                return
-            
-            # 只有在完全没有节点的情况下才清除配置
-            if os.path.exists(self.app_config_file):
-                os.remove(self.app_config_file)
-            self.input_box.clear()
-            self.node_combo.clear()
-            self.browser.setText("请输入新的订阅链接")
-            
-        except Exception as e:
-            print(f"清除应用配置时出错: {e}")
-
     def save_config(self, save_url=True):
         try:
             current_index = self.node_combo.currentIndex()
