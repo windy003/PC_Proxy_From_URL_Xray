@@ -984,34 +984,6 @@ class TrojanUrlViewer(QWidget):
         # 当节点选择改变时保存配置
         self.save_config()
 
-    def on_parse_click_with_callback(self, config):
-        """获取节点，根据保存的节点信息选择正确的节点"""
-        def select_saved_node():
-            try:
-                if 'last_node_info' in config and config['last_node_info']:
-                    saved_node = config['last_node_info']
-                    print("尝试恢复的节点信息:", saved_node)  # 调试信息
-                    print("当前用节点列表:", [(i, node['remark']) for i, node in enumerate(self.nodes)])  # 调试信息
-                    
-                    # 查找匹配的节点
-                    for i, node in enumerate(self.nodes):
-                        if (node['host'] == saved_node['host'] and 
-                            node['port'] == saved_node['port'] and 
-                            node['remark'] == saved_node['remark']):
-                            print(f"找到匹配节点，索引为: {i}")  # 调试信息
-                            self.node_combo.setCurrentIndex(i)
-                            if config.get('auto_connect', False):
-                                QTimer.singleShot(500, self.start_proxy)
-                            break
-            except Exception as e:
-                print(f"选择保存的节点时出错: {e}")
-
-        # 先执行原有的获取节点操作
-        print("开始获取节点...")  # 调试信息
-        self.on_parse_click()
-        # 增加延时时间，确保节点完全加载
-        QTimer.singleShot(2000, select_saved_node)  # 延长等待时间到2
-
     def setup_firewall_rules(self):
         """配置防火墙规则"""
         try:
