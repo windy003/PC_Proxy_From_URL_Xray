@@ -894,7 +894,7 @@ class TrojanUrlViewer(QWidget):
             self.status_label.setText("代理状态：未运行")
             
         except Exception as e:
-            self.browser.setText(f"止代理时发生错误: {str(e)}")
+            self.browser.setText(f"停止代理时发生错误: {str(e)}")
 
     def update_proxy_status(self, message):
         try:
@@ -980,15 +980,6 @@ class TrojanUrlViewer(QWidget):
         except Exception as e:
             print(f"自动连接时出错: {e}")
 
-    def toggle_fullscreen(self):
-        """切换全屏与非全屏状态"""
-        try:
-            if self.isFullScreen():
-                self.showNormal()
-            else:
-                self.showFullScreen()
-        except Exception as e:
-            print(f"切换全屏状态时出错: {e}")
 
     def toggle_status_fullscreen(self):
         """切换状态区域的全屏显示"""
