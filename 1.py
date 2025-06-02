@@ -3,7 +3,10 @@
 # ------------------------------------------------
 # self.app_config_file = os.path.join(self.app_data_dir, 'app_config.json')
 
-            
+# ________________________________________________________            
+
+
+# 这个项目会把程序目录下的xray.exe复制到固定目录下，然后使用固定目录下的xray.exe
 
 import base64
 import sys
