@@ -137,7 +137,8 @@ class FetchThread(QThread):
                         headers=headers,
                         verify=False, 
                         timeout=30,  # 增加超时时间到30秒
-                        allow_redirects=True  # 允许重定向
+                        allow_redirects=True,  # 允许重定向
+                        proxies={'http': None, 'https': None}  # 禁用代理
                     )
                     
                     if response.status_code == 200:
