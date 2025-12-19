@@ -674,21 +674,24 @@ class TrojanUrlViewer(QWidget):
         else:
             # 如果是直接运行python脚本
             application_path = os.path.dirname(os.path.abspath(__file__))
-            
+
         # 图标文件路径
         icon_path = os.path.join(application_path, 'icon.png')
-        
+
         # 创建系统托盘图标
         self.tray_icon = QSystemTrayIcon(self)
         if os.path.exists(icon_path):
             self.tray_icon.setIcon(QIcon(icon_path))
         else:
             print(f"找不到图标文件: {icon_path}")
-        
+
         # 创建托盘菜单
         tray_menu = QMenu()
-        
-        
+
+        # 添加显示/隐藏主窗口菜单项
+        self.show_action = tray_menu.addAction('显示主窗口(&S)')
+        self.show_action.triggered.connect(self.toggle_window)
+
         # 添加分隔线
         tray_menu.addSeparator()
         
@@ -720,42 +723,41 @@ class TrojanUrlViewer(QWidget):
         self.tray_check_timer.timeout.connect(self.check_tray_status)
         self.tray_check_timer.start(5000)  # 每5秒检查一次
 
-    def tray_icon_activated(self, reason):
-        """处理托盘图标的点击事件"""
+    def toggle_window(self):
+        """切换窗口显示/隐藏状态"""
         try:
-            if reason == QSystemTrayIcon.DoubleClick:
-                # 改进的窗口唤醒逻辑
-                if not self.isVisible() or self.isMinimized():
-                    # 强制显示并激活窗口
-                    self.setWindowState(self.windowState() & ~Qt.WindowMinimized | Qt.WindowActive)
-                    self.show()
-                    self.activateWindow()
-                    self.raise_()
-                    
-                    # Windows特定的窗口激活方法
-                    if sys.platform == 'win32':
-                        try:
-                            import ctypes
-                            from ctypes import wintypes
-                            
-                            # 获取窗口句柄
-                            hwnd = int(self.winId())
-                            
-                            # 强制将窗口带到前台
-                            ctypes.windll.user32.SetForegroundWindow(hwnd)
-                            ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-                            ctypes.windll.user32.SetActiveWindow(hwnd)
-                            
-                        except Exception as e:
-                            print(f"Windows特定激活失败: {e}")
-                    
-                    self.show_action.setText('隐藏主窗口')
-                else:
-                    self.hide()
-                    self.show_action.setText('显示主窗口')
-                
+            if not self.isVisible() or self.isMinimized():
+                # 强制显示并激活窗口
+                self.setWindowState(self.windowState() & ~Qt.WindowMinimized | Qt.WindowActive)
+                self.show()
+                self.activateWindow()
+                self.raise_()
+
+                # Windows特定的窗口激活方法
+                if sys.platform == 'win32':
+                    try:
+                        import ctypes
+
+                        # 获取窗口句柄
+                        hwnd = int(self.winId())
+
+                        # 强制将窗口带到前台
+                        ctypes.windll.user32.SetForegroundWindow(hwnd)
+                        ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                        ctypes.windll.user32.SetActiveWindow(hwnd)
+
+                    except Exception as e:
+                        print(f"Windows特定激活失败: {e}")
+
+                if hasattr(self, 'show_action'):
+                    self.show_action.setText('隐藏主窗口(&S)')
+            else:
+                self.hide()
+                if hasattr(self, 'show_action'):
+                    self.show_action.setText('显示主窗口(&S)')
+
         except Exception as e:
-            print(f"处理托盘图标点击事件时出错: {e}")
+            print(f"切换窗口显示状态时出错: {e}")
             # 发生错误时的备用方案
             try:
                 self.setWindowState(Qt.WindowNoState)
@@ -768,6 +770,11 @@ class TrojanUrlViewer(QWidget):
                     ctypes.windll.user32.SetForegroundWindow(hwnd)
             except:
                 pass
+
+    def tray_icon_activated(self, reason):
+        """处理托盘图标的点击事件"""
+        if reason == QSystemTrayIcon.DoubleClick:
+            self.toggle_window()
 
     def quit_app(self):
         """完全退出程序"""
