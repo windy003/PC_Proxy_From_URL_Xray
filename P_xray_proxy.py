@@ -727,27 +727,45 @@ class TrojanUrlViewer(QWidget):
         """切换窗口显示/隐藏状态"""
         try:
             if not self.isVisible() or self.isMinimized():
-                # 强制显示并激活窗口
-                self.setWindowState(self.windowState() & ~Qt.WindowMinimized | Qt.WindowActive)
-                self.show()
-                self.activateWindow()
-                self.raise_()
-
-                # Windows特定的窗口激活方法
+                # Windows特定的窗口激活方法 - 使用 AttachThreadInput 技巧绕过权限限制
                 if sys.platform == 'win32':
                     try:
-                        import ctypes
-
-                        # 获取窗口句柄
                         hwnd = int(self.winId())
 
-                        # 强制将窗口带到前台
-                        ctypes.windll.user32.SetForegroundWindow(hwnd)
+                        # 获取前台窗口的线程ID
+                        foreground_hwnd = ctypes.windll.user32.GetForegroundWindow()
+                        foreground_thread_id = ctypes.windll.user32.GetWindowThreadProcessId(foreground_hwnd, None)
+                        current_thread_id = ctypes.windll.kernel32.GetCurrentThreadId()
+
+                        # 附加到前台线程（关键步骤）
+                        attached = False
+                        if foreground_thread_id != current_thread_id:
+                            attached = ctypes.windll.user32.AttachThreadInput(foreground_thread_id, current_thread_id, True)
+
+                        # 先恢复窗口状态
+                        self.setWindowState(self.windowState() & ~Qt.WindowMinimized | Qt.WindowActive)
+                        self.show()
+
+                        # 多种方法确保窗口到前台
                         ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                        ctypes.windll.user32.BringWindowToTop(hwnd)
+                        ctypes.windll.user32.SetForegroundWindow(hwnd)
                         ctypes.windll.user32.SetActiveWindow(hwnd)
+
+                        # 分离线程
+                        if attached:
+                            ctypes.windll.user32.AttachThreadInput(foreground_thread_id, current_thread_id, False)
 
                     except Exception as e:
                         print(f"Windows特定激活失败: {e}")
+                        self.setWindowState(self.windowState() & ~Qt.WindowMinimized | Qt.WindowActive)
+                        self.show()
+                else:
+                    self.setWindowState(self.windowState() & ~Qt.WindowMinimized | Qt.WindowActive)
+                    self.show()
+
+                self.activateWindow()
+                self.raise_()
 
                 if hasattr(self, 'show_action'):
                     self.show_action.setText('隐藏主窗口(&S)')
@@ -758,14 +776,12 @@ class TrojanUrlViewer(QWidget):
 
         except Exception as e:
             print(f"切换窗口显示状态时出错: {e}")
-            # 发生错误时的备用方案
             try:
                 self.setWindowState(Qt.WindowNoState)
                 self.show()
                 self.activateWindow()
                 self.raise_()
                 if sys.platform == 'win32':
-                    import ctypes
                     hwnd = int(self.winId())
                     ctypes.windll.user32.SetForegroundWindow(hwnd)
             except:
