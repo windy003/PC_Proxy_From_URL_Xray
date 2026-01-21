@@ -435,20 +435,26 @@ class TrojanUrlViewer(QWidget):
                 with open(self.app_config_file, 'r', encoding='utf-8') as f:
                     config = json.load(f)
                     print("加载的应用配置文件内容:", config)
-                    
-                    # 恢复所有点信息
+
+                    # 恢复所有节点信息
                     if 'all_nodes' in config and config['all_nodes']:
                         print("找到已保存的所有节点信息")
                         self.nodes = config['all_nodes']
+
+                        # 临时断开信号，避免触发 on_node_changed -> save_config
+                        self.node_combo.blockSignals(True)
                         self.node_combo.clear()
                         for node in self.nodes:
                             self.node_combo.addItem(f"{node['remark']}")
-                        
+
                         # 设置上次选择的节点
                         if 'last_node_index' in config:
                             last_index = config['last_node_index']
                             if 0 <= last_index < len(self.nodes):
                                 self.node_combo.setCurrentIndex(last_index)
+
+                        # 恢复信号连接
+                        self.node_combo.blockSignals(False)
 
                     # 恢复HTTP端口设置
                     if 'http_port' in config and hasattr(self, 'port_input'):
@@ -946,58 +952,10 @@ class TrojanUrlViewer(QWidget):
         self.save_config()
 
     def setup_firewall_rules(self):
-        """配置防火墙规则"""
-        try:
-            # 检查是否以管理员权限运行
-            if not self.is_admin():
-                return
-                
-            # 获取xray路径
-            if getattr(sys, 'frozen', False):
-                base_path = sys._MEIPASS
-            else:
-                base_path = os.path.dirname(os.path.abspath(__file__))
-            xray_path = os.path.join(base_path, 'xray.exe')
-            
-            # 删除已存在的规则（入站和出站）
-            subprocess.run([
-                'netsh', 'advfirewall', 'firewall', 'delete', 'rule',
-                'name=ProxyByUrl-In'
-            ], capture_output=True)
-            
-            subprocess.run([
-                'netsh', 'advfirewall', 'firewall', 'delete', 'rule',
-                'name=ProxyByUrl-Out'
-            ], capture_output=True)
-            
-            # 添加新的入站规则
-            subprocess.run([
-                'netsh', 'advfirewall', 'firewall', 'add', 'rule',
-                'name=ProxyByUrl-In',
-                'dir=in',
-                'action=allow',
-                'program=' + xray_path,
-                'enable=yes',
-                'profile=any',
-                'protocol=TCP'
-            ], capture_output=True)
-            
-            # 添加新的出站规则
-            subprocess.run([
-                'netsh', 'advfirewall', 'firewall', 'add', 'rule',
-                'name=ProxyByUrl-Out',
-                'dir=out',
-                'action=allow',
-                'program=' + xray_path,
-                'enable=yes',
-                'profile=any',
-                'protocol=TCP'
-            ], capture_output=True)
-            
-            print("防火墙规则配置成功")
-            
-        except Exception as e:
-            print(f"设置防火墙规则时出错: {e}")
+        """配置防火墙规则 - 已禁用，Windows 会在首次运行时自动弹出提示"""
+        # 不再自动配置防火墙，让 Windows 在 xray.exe 首次监听端口时弹出提示
+        # 用户点击"允许"即可，无需管理员权限
+        pass
 
     def auto_connect(self):
         """自动连接到上次使用的节点"""
@@ -1072,23 +1030,6 @@ class TrojanUrlViewer(QWidget):
 
 def main():
     try:
-        # 检查是否以管理员权限运行
-        if not ctypes.windll.shell32.IsUserAnAdmin():
-            # 使用 CREATE_NO_WINDOW 标志启动新进程
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            startupinfo.wShowWindow = subprocess.SW_HIDE
-            
-            subprocess.Popen([
-                'powershell.exe', 
-                'Start-Process', 
-                sys.executable,
-                '-ArgumentList', ' '.join(sys.argv),
-                '-Verb', 'RunAs',
-                '-WindowStyle', 'Hidden'
-            ], startupinfo=startupinfo)
-            sys.exit()
-            
         app = QApplication(sys.argv)
         
         # 添加全局样式表设置
