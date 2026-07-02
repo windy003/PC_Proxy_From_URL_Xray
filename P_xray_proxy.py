@@ -1,4 +1,4 @@
-#  pyinstaller --noconfirm --onefile --windowed --icon=icon.ico --add-data "icon.ico;."   --add-data "icon.png;." --add-data "xray.exe;."   1.py   --name  "proxyByUrl"
+#  pyinstaller --noconfirm --onefile --windowed --icon=256x256.ico --add-data "256x256.ico;."   --add-data "icon.png;." --add-data "xray.exe;."   --add-binary "tun2socks.exe;."  --add-binary "wintun.dll;." P_xray_proxy.py   --name  "proxyByUrl"
 
 # ------------------------------------------------
 # self.app_config_file = os.path.join(self.app_data_dir, 'app_config.json')
@@ -14,13 +14,13 @@ import json
 import requests
 import subprocess
 import os
-from urllib.parse import unquote, urlparse, parse_qs
-from PyQt5.QtWidgets import (QApplication, QSystemTrayIcon, QMenu, QWidget, 
+from urllib.parse import unquote, quote, urlparse, parse_qs
+from PyQt5.QtWidgets import (QApplication, QSystemTrayIcon, QMenu, QWidget,
                            QTextBrowser, QLineEdit, QPushButton, QComboBox,
                            QLabel, QVBoxLayout, QHBoxLayout, QMessageBox,
-                           QStyle, QGroupBox)
-from PyQt5.QtGui import QIcon
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
+                           QStyle, QGroupBox, QStyledItemDelegate, QCheckBox)
+from PyQt5.QtGui import QIcon, QColor
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QEvent, QRect
 import threading
 import time
 import socket
@@ -30,6 +30,53 @@ from PyQt5.QtGui import QKeySequence
 import winreg
 import ctypes
 import random
+
+def get_resource_path(name):
+    """获取资源文件路径(兼容 PyInstaller 打包与源码运行)"""
+    if getattr(sys, 'frozen', False):
+        base_path = sys._MEIPASS
+    else:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_path, name)
+
+
+def get_app_icon_path():
+    """返回程序图标路径，优先使用 256x256.ico"""
+    for name in ('256x256.ico', 'icon.ico', 'icon.png'):
+        path = get_resource_path(name)
+        if os.path.exists(path):
+            return path
+    return get_resource_path('256x256.ico')
+
+
+def is_admin():
+    """判断当前进程是否拥有管理员权限"""
+    try:
+        return ctypes.windll.shell32.IsUserAnAdmin() != 0
+    except Exception:
+        return False
+
+
+def relaunch_as_admin():
+    """以管理员权限重新启动本程序，成功则返回 True(调用方应随后退出)"""
+    try:
+        if getattr(sys, 'frozen', False):
+            # 打包后的 exe
+            executable = sys.executable
+            params = ''
+        else:
+            # 源码运行：用 python 解释器带上脚本路径
+            executable = sys.executable
+            params = f'"{os.path.abspath(__file__)}"'
+        ret = ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", executable, params, None, 1
+        )
+        # ShellExecuteW 返回值 > 32 表示成功
+        return ret > 32
+    except Exception as e:
+        print(f"提权重启失败: {e}")
+        return False
+
 
 class FetchThread(QThread):
     finished = pyqtSignal(str)
@@ -44,6 +91,66 @@ class FetchThread(QThread):
 
     def stop(self):
         self._is_running = False
+
+    def _b64decode(self, s):
+        """容错的 base64 解码，兼容 url-safe 变体与缺失的填充字符"""
+        s = s.strip()
+        s = s.replace('-', '+').replace('_', '/')
+        missing = len(s) % 4
+        if missing:
+            s += '=' * (4 - missing)
+        return base64.b64decode(s).decode('utf-8')
+
+    def parse_ss(self, line):
+        """解析 shadowsocks (ss://) 链接，返回节点字典或 None"""
+        try:
+            uri = line[5:]  # 去掉 'ss://'
+
+            # 提取备注
+            remark = '未命名节点'
+            if '#' in uri:
+                uri, remark = uri.split('#', 1)
+                remark = unquote(remark)
+
+            method = password = host = port = None
+
+            if '@' in uri:
+                # SIP002 格式: userinfo@host:port?plugin
+                userinfo, hostpart = uri.rsplit('@', 1)
+                userinfo = unquote(userinfo)
+                try:
+                    method, password = self._b64decode(userinfo).split(':', 1)
+                except Exception:
+                    # 少数链接 userinfo 未做 base64 编码
+                    if ':' in userinfo:
+                        method, password = userinfo.split(':', 1)
+                # 去掉 plugin 等查询参数
+                if '?' in hostpart:
+                    hostpart = hostpart.split('?', 1)[0]
+                if ':' in hostpart:
+                    host, port = hostpart.rsplit(':', 1)
+            else:
+                # 旧格式: 整体 base64(method:password@host:port)
+                if '?' in uri:
+                    uri = uri.split('?', 1)[0]
+                decoded = self._b64decode(uri)
+                creds, hostpart = decoded.rsplit('@', 1)
+                method, password = creds.split(':', 1)
+                host, port = hostpart.rsplit(':', 1)
+
+            if host and port and method and password:
+                return {
+                    'type': 'shadowsocks',
+                    'host': host,
+                    'port': port,
+                    'password': password,
+                    'method': method,
+                    'remark': remark,
+                    'sni': ''
+                }
+        except Exception as e:
+            print(f"解析ss节点失败: {e}, 链接: {line[:30]}...")
+        return None
 
     def parse_nodes(self, content):
         """解析节点信息"""
@@ -83,18 +190,29 @@ class FetchThread(QThread):
                                             break
                                 
                                 nodes.append({
+                                    'type': 'trojan',
                                     'host': host,
                                     'port': port,
                                     'password': password,
                                     'remark': remark,
                                     'sni': sni
                                 })
-                                
+
+                    elif line.startswith('ss://'):
+                        # 解析 shadowsocks 链接
+                        # 支持两种格式:
+                        #   SIP002:  ss://base64(method:password)@host:port?plugin#remark
+                        #   旧格式:  ss://base64(method:password@host:port)#remark
+                        node = self.parse_ss(line)
+                        if node:
+                            nodes.append(node)
+
                     elif line.startswith('vmess://'):
                         # 保留原有的vmess解析逻辑
                         vmess_data = base64.b64decode(line[8:]).decode('utf-8')
                         node = json.loads(vmess_data)
                         nodes.append({
+                            'type': 'vmess',
                             'host': node.get('add', ''),
                             'port': str(node.get('port', '')),
                             'password': node.get('id', ''),
@@ -193,14 +311,21 @@ class FetchThread(QThread):
 class ProxyThread(QThread):
     status_update = pyqtSignal(str)
 
-    def __init__(self, server, port, password, sni=None, http_port=None):
+    def __init__(self, server, port, password, sni=None, http_port=None, node_type='trojan', method=None, allow_lan=False):
         super().__init__()
         self.server = server
         self.port = port
         self.password = password
         self.sni = sni
+        self.node_type = node_type      # trojan / shadowsocks
+        self.method = method            # shadowsocks 加密方式
+        self.allow_lan = allow_lan      # 是否允许局域网设备连接(HTTP 入站)
         # 如果没有指定端口，选择一个随机高端口
         self.http_port = http_port if http_port else self.get_random_port()
+        # 供 TUN(tun2socks) 使用的 SOCKS5 入站端口，确保与 http 端口不同
+        self.socks_port = self.get_random_port()
+        while self.socks_port == self.http_port:
+            self.socks_port = self.get_random_port()
         self._is_running = True
         self.process = None
         
@@ -270,37 +395,65 @@ class ProxyThread(QThread):
             # 使用用户目录的xray配置文件
             config_path = os.path.join(self.app_data_dir, 'xray_config.json')
             
-            # Xray 配置 - 只使用HTTP代理
+            # 根据协议类型构建 outbound
+            if self.node_type == 'shadowsocks':
+                outbound = {
+                    "protocol": "shadowsocks",
+                    "settings": {
+                        "servers": [
+                            {
+                                "address": self.server,
+                                "port": int(self.port),
+                                "method": self.method,
+                                "password": self.password
+                            }
+                        ]
+                    }
+                }
+            else:
+                # 默认按 trojan 处理
+                outbound = {
+                    "protocol": "trojan",
+                    "settings": {
+                        "servers": [
+                            {
+                                "address": self.server,
+                                "port": int(self.port),
+                                "password": self.password
+                            }
+                        ]
+                    },
+                    "streamSettings": {
+                        "network": "tcp",
+                        "security": "tls",
+                        "tlsSettings": {
+                            "allowInsecure": True,
+                            "serverName": self.sni if self.sni else self.server
+                        }
+                    }
+                }
+
+            # HTTP 入站监听地址：允许局域网则绑 0.0.0.0，否则仅本机
+            http_listen = "0.0.0.0" if self.allow_lan else "127.0.0.1"
+
+            # Xray 配置 - HTTP 入站(普通/系统代理) + SOCKS 入站(供 TUN 使用)
             config = {
                 "inbounds": [
                     {
+                        "tag": "http-in",
                         "port": self.http_port,
-                        "listen": "0.0.0.0",  # 仅监听本地地址
+                        "listen": http_listen,
                         "protocol": "http"
-                    }
-                ],
-                "outbounds": [
+                    },
                     {
-                        "protocol": "trojan",
-                        "settings": {
-                            "servers": [
-                                {
-                                    "address": self.server,
-                                    "port": int(self.port),
-                                    "password": self.password
-                                }
-                            ]
-                        },
-                        "streamSettings": {
-                            "network": "tcp",
-                            "security": "tls",
-                            "tlsSettings": {
-                                "allowInsecure": True,
-                                "serverName": self.sni if self.sni else self.server
-                            }
-                        }
+                        "tag": "socks-in",
+                        "port": self.socks_port,
+                        "listen": "127.0.0.1",
+                        "protocol": "socks",
+                        "settings": {"udp": True}
                     }
                 ],
+                "outbounds": [outbound],
                 "log": {
                     "loglevel": "info"
                 }
@@ -376,6 +529,30 @@ class ProxyThread(QThread):
         except Exception as e:
             print(f"清理残留程时出错: {e}")
 
+class NodeDeleteDelegate(QStyledItemDelegate):
+    """为下拉列表每一项在右侧绘制一个删除按钮 ✕"""
+    BUTTON_WIDTH = 30
+
+    def paint(self, painter, option, index):
+        # 先绘制默认的项(文本、选中高亮等)
+        super().paint(painter, option, index)
+        # 在右侧绘制 ✕
+        rect = option.rect
+        btn_rect = QRect(
+            rect.right() - self.BUTTON_WIDTH, rect.top(),
+            self.BUTTON_WIDTH, rect.height()
+        )
+        painter.save()
+        painter.setPen(QColor('#c0392b'))
+        painter.drawText(btn_rect, Qt.AlignCenter, '✕')
+        painter.restore()
+
+    def sizeHint(self, option, index):
+        size = super().sizeHint(option, index)
+        size.setWidth(size.width() + self.BUTTON_WIDTH)
+        return size
+
+
 class TrojanUrlViewer(QWidget):
     def __init__(self):
         super().__init__()
@@ -383,6 +560,16 @@ class TrojanUrlViewer(QWidget):
         self.fetch_thread = None
         self.proxy_thread = None
         self.nodes = []
+        # 多订阅支持
+        self.subscriptions = []      # [{'name','url','nodes':[...],'node_index':int}]
+        self.current_sub_index = 0   # 当前显示/使用的订阅索引
+        # 全局系统代理状态：是否已由本程序写入系统代理设置
+        self.system_proxy_active = False
+        # TUN 模式状态
+        self.tun_process = None       # tun2socks 子进程
+        self.tun_active = False       # 是否已建立 TUN 及路由
+        self.tun_routes = []          # 已添加、需要在关闭时删除的路由(目标网络)
+        self.saved_gateway = None     # 启用 TUN 前的物理默认网关
         
         # 配置目录初始化
         self.app_data_dir = os.path.join(os.path.expanduser('~'), 'AppData', 'Local', 'ProxyByUrl')
@@ -406,18 +593,12 @@ class TrojanUrlViewer(QWidget):
         if self.nodes:
             QTimer.singleShot(1000, self.auto_connect)
 
-        # 获取资源文件路径
-        if getattr(sys, 'frozen', False):
-            application_path = sys._MEIPASS
-        else:
-            application_path = os.path.dirname(os.path.abspath(__file__))
-            
-        # 图标文件路径
-        icon_path = os.path.join(application_path, 'icon.png')
-        
+        # 图标文件路径(优先 256x256.ico)
+        icon_path = get_app_icon_path()
+
         # 创建图标对象
         app_icon = QIcon(icon_path)
-        
+
         # 设置窗口图标
         self.setWindowIcon(app_icon)
         
@@ -436,65 +617,169 @@ class TrojanUrlViewer(QWidget):
                     config = json.load(f)
                     print("加载的应用配置文件内容:", config)
 
-                    # 恢复所有节点信息
-                    if 'all_nodes' in config and config['all_nodes']:
-                        print("找到已保存的所有节点信息")
-                        self.nodes = config['all_nodes']
+                    # 恢复订阅列表（新格式）
+                    if 'subscriptions' in config and config['subscriptions']:
+                        self.subscriptions = config['subscriptions']
+                    # 向后兼容：把旧的单一 all_nodes 迁移成一个"默认订阅"
+                    elif 'all_nodes' in config and config['all_nodes']:
+                        print("检测到旧版配置，迁移为默认订阅")
+                        self.subscriptions = [{
+                            'name': '默认订阅',
+                            'url': config.get('last_url', ''),
+                            'nodes': config['all_nodes'],
+                            'node_index': config.get('last_node_index', 0)
+                        }]
 
-                        # 临时断开信号，避免触发 on_node_changed -> save_config
-                        self.node_combo.blockSignals(True)
-                        self.node_combo.clear()
-                        for node in self.nodes:
-                            self.node_combo.addItem(f"{node['remark']}")
+                    # 恢复当前订阅索引
+                    self.current_sub_index = config.get('current_sub_index', 0)
+                    if not (0 <= self.current_sub_index < len(self.subscriptions)):
+                        self.current_sub_index = 0
 
-                        # 设置上次选择的节点
-                        if 'last_node_index' in config:
-                            last_index = config['last_node_index']
-                            if 0 <= last_index < len(self.nodes):
-                                self.node_combo.setCurrentIndex(last_index)
-
-                        # 恢复信号连接
-                        self.node_combo.blockSignals(False)
+                    # 填充订阅下拉框
+                    self.refresh_sub_combo()
+                    # 填充当前订阅的节点
+                    self.load_current_subscription_nodes()
 
                     # 恢复HTTP端口设置
                     if 'http_port' in config and hasattr(self, 'port_input'):
                         self.port_input.setText(config['http_port'])
 
+                    # 恢复全局系统代理开关(不触发信号，避免加载时误操作)
+                    if 'system_proxy' in config and hasattr(self, 'system_proxy_checkbox'):
+                        self.system_proxy_checkbox.blockSignals(True)
+                        self.system_proxy_checkbox.setChecked(bool(config['system_proxy']))
+                        self.system_proxy_checkbox.blockSignals(False)
+
+                    # 恢复 TUN 开关(不触发信号)
+                    if 'tun_mode' in config and hasattr(self, 'tun_checkbox'):
+                        self.tun_checkbox.blockSignals(True)
+                        self.tun_checkbox.setChecked(bool(config['tun_mode']))
+                        self.tun_checkbox.blockSignals(False)
+
+                    # 恢复局域网访问开关(不触发信号)
+                    if 'allow_lan' in config and hasattr(self, 'lan_checkbox'):
+                        self.lan_checkbox.blockSignals(True)
+                        self.lan_checkbox.setChecked(bool(config['allow_lan']))
+                        self.lan_checkbox.blockSignals(False)
+
         except Exception as e:
             print(f"加载应用配置时出错: {e}")
 
+    def current_subscription(self):
+        """返回当前选中的订阅字典，没有则返回 None"""
+        if 0 <= self.current_sub_index < len(self.subscriptions):
+            return self.subscriptions[self.current_sub_index]
+        return None
+
+    def refresh_sub_combo(self):
+        """根据 self.subscriptions 刷新订阅下拉框"""
+        self.sub_combo.blockSignals(True)
+        self.sub_combo.clear()
+        for sub in self.subscriptions:
+            self.sub_combo.addItem(sub.get('name', '未命名订阅'))
+        if 0 <= self.current_sub_index < len(self.subscriptions):
+            self.sub_combo.setCurrentIndex(self.current_sub_index)
+        self.sub_combo.blockSignals(False)
+
+    def load_current_subscription_nodes(self):
+        """把当前订阅的节点加载到节点下拉框"""
+        sub = self.current_subscription()
+        self.node_combo.blockSignals(True)
+        self.node_combo.clear()
+        if sub is not None:
+            self.nodes = sub.get('nodes', [])
+            for node in self.nodes:
+                self.node_combo.addItem(f"{node['remark']}")
+            idx = sub.get('node_index', 0)
+            if 0 <= idx < len(self.nodes):
+                self.node_combo.setCurrentIndex(idx)
+        else:
+            self.nodes = []
+        self.node_combo.blockSignals(False)
+
+    def on_sub_changed(self, index):
+        """切换订阅时更新显示的节点"""
+        if 0 <= index < len(self.subscriptions):
+            self.current_sub_index = index
+            self.load_current_subscription_nodes()
+            self.save_config()
+
+    def generate_sub_name(self, url):
+        """为新订阅生成一个默认且唯一的名称"""
+        existing_names = {s.get('name', '') for s in self.subscriptions}
+        n = len(self.subscriptions) + 1
+        name = f"订阅{n}"
+        while name in existing_names:
+            n += 1
+            name = f"订阅{n}"
+        return name
+
+    def delete_subscription(self):
+        """删除当前选中的订阅"""
+        try:
+            sub = self.current_subscription()
+            if sub is None:
+                return
+            name = sub.get('name', '未命名订阅')
+            reply = QMessageBox.question(
+                self, '删除订阅', f'确定要删除订阅"{name}"吗？',
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            )
+            if reply != QMessageBox.Yes:
+                return
+            del self.subscriptions[self.current_sub_index]
+            if self.current_sub_index >= len(self.subscriptions):
+                self.current_sub_index = max(0, len(self.subscriptions) - 1)
+            self.refresh_sub_combo()
+            self.load_current_subscription_nodes()
+            self.save_config()
+        except Exception as e:
+            print(f"删除订阅时出错: {e}")
+
     def save_config(self, save_url=True):
         try:
-            current_index = self.node_combo.currentIndex()
-            if current_index >= 0 and self.nodes and current_index < len(self.nodes):
-                if not os.path.exists(self.app_data_dir):
-                    os.makedirs(self.app_data_dir)
+            if not os.path.exists(self.app_data_dir):
+                os.makedirs(self.app_data_dir)
 
-                selected_node = self.nodes[current_index]
-                config = {
-                    'last_node_index': current_index,
-                    'last_node_info': selected_node,
-                    'all_nodes': self.nodes,
-                    'auto_connect': True
-                }
-                
-                # 保存HTTP端口设置
-                if hasattr(self, 'port_input'):
-                    config['http_port'] = self.port_input.text().strip()
-                
-                if save_url:
-                    config['last_url'] = self.input_box.text()
-                
-                # 使用临时文件确保安全写入
-                temp_file = self.app_config_file + '.tmp'
-                with open(temp_file, 'w', encoding='utf-8') as f:
-                    json.dump(config, f, indent=2, ensure_ascii=False)
-                
-                if os.path.exists(temp_file):
-                    if os.path.exists(self.app_config_file):
-                        os.remove(self.app_config_file)
-                    os.rename(temp_file, self.app_config_file)
-                    print(f"配置已成功保存到: {self.app_config_file}")
+            # 把当前节点选择记录到对应订阅里
+            sub = self.current_subscription()
+            if sub is not None:
+                node_index = self.node_combo.currentIndex()
+                if node_index >= 0:
+                    sub['node_index'] = node_index
+
+            config = {
+                'subscriptions': self.subscriptions,
+                'current_sub_index': self.current_sub_index,
+                'auto_connect': True
+            }
+
+            # 保存HTTP端口设置
+            if hasattr(self, 'port_input'):
+                config['http_port'] = self.port_input.text().strip()
+
+            # 保存全局系统代理开关状态
+            if hasattr(self, 'system_proxy_checkbox'):
+                config['system_proxy'] = self.system_proxy_checkbox.isChecked()
+
+            # 保存 TUN 开关状态
+            if hasattr(self, 'tun_checkbox'):
+                config['tun_mode'] = self.tun_checkbox.isChecked()
+
+            # 保存局域网访问开关状态
+            if hasattr(self, 'lan_checkbox'):
+                config['allow_lan'] = self.lan_checkbox.isChecked()
+
+            # 使用临时文件确保安全写入
+            temp_file = self.app_config_file + '.tmp'
+            with open(temp_file, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+
+            if os.path.exists(temp_file):
+                if os.path.exists(self.app_config_file):
+                    os.remove(self.app_config_file)
+                os.rename(temp_file, self.app_config_file)
+                print(f"配置已成功保存到: {self.app_config_file}")
         except Exception as e:
             print(f"保存应用配置时出错: {e}")
 
@@ -533,25 +818,54 @@ class TrojanUrlViewer(QWidget):
             self.browser.setText(result)
             self.parse_button.setEnabled(True)
             
-            # 更新节点下拉框
+            # 把获取到的节点保存为一个订阅
             if hasattr(self.fetch_thread, 'nodes') and self.fetch_thread.nodes:
-                self.nodes = self.fetch_thread.nodes
-                print(f"成功获取到 {len(self.nodes)} 个节点")
-                self.node_combo.clear()
-                for node in self.nodes:
-                    self.node_combo.addItem(f"{node['remark']}")
-                
-                # 清空URL输入框
+                nodes = self.fetch_thread.nodes
+                url = getattr(self.fetch_thread, 'url', '')
+                print(f"成功获取到 {len(nodes)} 个节点")
+
+                # 订阅名称：优先用用户输入，否则自动生成
+                name = self.name_input.text().strip()
+
+                # 若已存在相同 URL 的订阅则更新，否则新增
+                existing_index = None
+                for i, s in enumerate(self.subscriptions):
+                    if s.get('url') and s.get('url') == url:
+                        existing_index = i
+                        break
+
+                if existing_index is not None:
+                    sub = self.subscriptions[existing_index]
+                    sub['nodes'] = nodes
+                    sub['node_index'] = 0
+                    if name:
+                        sub['name'] = name
+                    self.current_sub_index = existing_index
+                else:
+                    if not name:
+                        name = self.generate_sub_name(url)
+                    self.subscriptions.append({
+                        'name': name,
+                        'url': url,
+                        'nodes': nodes,
+                        'node_index': 0
+                    })
+                    self.current_sub_index = len(self.subscriptions) - 1
+
+                # 刷新界面
+                self.refresh_sub_combo()
+                self.load_current_subscription_nodes()
+
+                # 清空输入框
                 self.input_box.clear()
-                
-                # 保存配置但不保存URL
-                self.save_config(save_url=False)  # 需要修改save_config方法接受参数
-                
+                self.name_input.clear()
+
+                # 保存配置
+                self.save_config()
+
             else:
-                print("没有获取到新节点，保留现有节点")
+                print("没有获取到新节点，保留现有订阅")
                 if not self.nodes:
-                    self.nodes = []
-                    self.node_combo.clear()
                     self.browser.setText("获取节点失败，请检查订阅链接是否有效")
                 
         except Exception as e:
@@ -566,7 +880,7 @@ class TrojanUrlViewer(QWidget):
             print(f"更新进度时发生错误: {str(e)}")
 
     def initUI(self):
-        self.setWindowTitle('ProxyByUrl - 2025/5/30-02')  # 修改这行，添加版本信息
+        self.setWindowTitle('ProxyByUrl - 2026/7/2-1')  # 修改这行，添加版本信息
         # 移除全屏显示
         # self.showFullScreen()  # 删除这行
         
@@ -586,18 +900,37 @@ class TrojanUrlViewer(QWidget):
         # 使用垂直布局
         layout = QVBoxLayout()
         
+        # 订阅切换区域
+        sub_layout = QHBoxLayout()
+        sub_label = QLabel('订阅(&U)：')
+        self.sub_combo = QComboBox()
+        self.sub_combo.setMinimumWidth(200)
+        self.sub_combo.currentIndexChanged.connect(self.on_sub_changed)
+        sub_label.setBuddy(self.sub_combo)
+        self.delete_sub_button = QPushButton('删除订阅(&E)')
+        self.delete_sub_button.clicked.connect(self.delete_subscription)
+        sub_layout.addWidget(sub_label)
+        sub_layout.addWidget(self.sub_combo)
+        sub_layout.addWidget(self.delete_sub_button)
+        sub_layout.addStretch()
+        layout.addLayout(sub_layout)
+
         # URL输入区域
         url_layout = QHBoxLayout()
+        self.name_input = QLineEdit()
+        self.name_input.setPlaceholderText('订阅名称(可留空)')
+        self.name_input.setMaximumWidth(160)
         self.input_box = QLineEdit()
         self.input_box.setPlaceholderText('请输入订阅URL...')
         self.input_box.returnPressed.connect(self.on_parse_click)
-        
+
         # 使用 QShortcut 为输入框添加 Alt+D 快捷键
         shortcut = QShortcut(QKeySequence("Alt+D"), self)
         shortcut.activated.connect(lambda: self.input_box.setFocus())
-        
-        self.parse_button = QPushButton('获取节点(&G)')  # 添加Alt+G快捷键
+
+        self.parse_button = QPushButton('添加/更新订阅(&G)')  # 添加Alt+G快捷键
         self.parse_button.clicked.connect(self.on_parse_click)
+        url_layout.addWidget(self.name_input)
         url_layout.addWidget(self.input_box)
         url_layout.addWidget(self.parse_button)
         layout.addLayout(url_layout)
@@ -608,9 +941,19 @@ class TrojanUrlViewer(QWidget):
         self.node_combo = QComboBox()
         self.node_combo.setMinimumWidth(200)
         self.node_combo.currentIndexChanged.connect(self.on_node_changed)
+        # 给下拉列表每项加删除按钮 ✕
+        self.node_combo.setItemDelegate(NodeDeleteDelegate(self.node_combo))
+        self.node_combo.view().viewport().installEventFilter(self)
         node_label.setBuddy(self.node_combo)  # 将标签与下拉框关联
+        self.share_button = QPushButton('分享节点(&C)')      # 复制当前节点链接到剪贴板
+        self.share_button.clicked.connect(self.share_to_clipboard)
+        self.import_button = QPushButton('从剪贴板导入(&I)')  # 从剪贴板解析链接导入节点
+        self.import_button.clicked.connect(self.import_from_clipboard)
         node_layout.addWidget(node_label)
         node_layout.addWidget(self.node_combo)
+        node_layout.addWidget(self.share_button)
+        node_layout.addWidget(self.import_button)
+        node_layout.addStretch()
         layout.addLayout(node_layout)
         
         # 添加HTTP端口输入区域
@@ -621,8 +964,26 @@ class TrojanUrlViewer(QWidget):
         self.port_input.setText('')  # 默认为空
         self.port_input.setMaximumWidth(150)
         port_label.setBuddy(self.port_input)
+        # 全局系统代理开关
+        self.system_proxy_checkbox = QCheckBox('全局系统代理(&Y)')
+        self.system_proxy_checkbox.setToolTip('开启后所有应用自动走此代理，无需单独配置端口')
+        self.system_proxy_checkbox.stateChanged.connect(self.on_system_proxy_toggled)
+        # TUN 模式(虚拟网卡)开关
+        self.tun_checkbox = QCheckBox('TUN模式(&U)')
+        self.tun_checkbox.setToolTip('创建虚拟网卡接管全部流量(需要管理员权限及 tun2socks.exe / wintun.dll)')
+        self.tun_checkbox.stateChanged.connect(self.on_tun_toggled)
+        # 允许局域网访问开关
+        self.lan_checkbox = QCheckBox('允许局域网访问(&L)')
+        self.lan_checkbox.setToolTip('开启后同一局域网的其它设备可用「本机IP:端口」连接此HTTP代理')
+        self.lan_checkbox.stateChanged.connect(self.on_lan_toggled)
         port_layout.addWidget(port_label)
         port_layout.addWidget(self.port_input)
+        port_layout.addSpacing(20)
+        port_layout.addWidget(self.system_proxy_checkbox)
+        port_layout.addSpacing(10)
+        port_layout.addWidget(self.tun_checkbox)
+        port_layout.addSpacing(10)
+        port_layout.addWidget(self.lan_checkbox)
         port_layout.addStretch()  # 添加弹性空间
         layout.addLayout(port_layout)
         
@@ -673,16 +1034,8 @@ class TrojanUrlViewer(QWidget):
         self.setLayout(layout)
 
     def setupSystemTray(self):
-        # 获取资源文件路径
-        if getattr(sys, 'frozen', False):
-            # 如果是打包后的exe
-            application_path = sys._MEIPASS
-        else:
-            # 如果是直接运行python脚本
-            application_path = os.path.dirname(os.path.abspath(__file__))
-
-        # 图标文件路径
-        icon_path = os.path.join(application_path, 'icon.png')
+        # 图标文件路径(优先 256x256.ico)
+        icon_path = get_app_icon_path()
 
         # 创建系统托盘图标
         self.tray_icon = QSystemTrayIcon(self)
@@ -803,7 +1156,13 @@ class TrojanUrlViewer(QWidget):
         try:
             # 保存配置
             self.save_config()
-            
+
+            # 退出前务必拆除 TUN 与系统代理，否则会导致系统无法上网
+            if self.tun_active:
+                self.disable_tun()
+            if self.system_proxy_active:
+                self.disable_system_proxy()
+
             # 停止代理
             if hasattr(self, 'proxy_thread') and self.proxy_thread and self.proxy_thread.isRunning():
                 self.proxy_thread.stop()
@@ -869,12 +1228,16 @@ class TrojanUrlViewer(QWidget):
                 self.status_browser.append("尝试使用随机高端口启动代理...")
             
             # 启动新代理，根据用户输入决定是否使用指定端口
+            allow_lan = hasattr(self, 'lan_checkbox') and self.lan_checkbox.isChecked()
             self.proxy_thread = ProxyThread(
-                node_info['host'], 
-                node_info['port'], 
-                node_info['password'], 
+                node_info['host'],
+                node_info['port'],
+                node_info['password'],
                 node_info.get('sni'),
-                http_port  # 传入用户指定的端口，如果为None则使用随机端口
+                http_port,  # 传入用户指定的端口，如果为None则使用随机端口
+                node_type=node_info.get('type', 'trojan'),
+                method=node_info.get('method'),
+                allow_lan=allow_lan
             )
             self.proxy_thread.status_update.connect(self.update_proxy_status)
             self.proxy_thread.start()
@@ -911,16 +1274,34 @@ class TrojanUrlViewer(QWidget):
                     )
                     self.status_label.setText(status_text)
                     self.status_browser.append(f"HTTP代理已启动在端口: {http_port}")
+
+                    # 若勾选了全局系统代理，则在代理就绪后应用
+                    if hasattr(self, 'system_proxy_checkbox') and self.system_proxy_checkbox.isChecked():
+                        self.enable_system_proxy()
+
+                    # 若勾选了 TUN 模式，则在代理就绪后建立虚拟网卡
+                    if hasattr(self, 'tun_checkbox') and self.tun_checkbox.isChecked() and is_admin():
+                        self.enable_tun()
+
+                    # 若允许局域网访问，显示局域网地址
+                    if hasattr(self, 'lan_checkbox') and self.lan_checkbox.isChecked():
+                        self.show_lan_address()
         except Exception as e:
             print(f"更新代理端口状态时出错: {e}")
 
     def stop_proxy(self):
         try:
+            # 停止代理前先拆除 TUN 与系统代理，避免流量指向已关闭的端口导致断网
+            if self.tun_active:
+                self.disable_tun()
+            if self.system_proxy_active:
+                self.disable_system_proxy()
+
             if self.proxy_thread:
                 self.proxy_thread.stop()
                 self.proxy_thread.wait()
                 self.proxy_thread = None
-            
+
             self.start_button.setEnabled(True)
             self.stop_button.setEnabled(False)
             self.restart_button.setEnabled(False)  # 禁用重启按钮
@@ -950,6 +1331,553 @@ class TrojanUrlViewer(QWidget):
     def on_node_changed(self, index):
         # 当节点选择改变时保存配置
         self.save_config()
+
+    # ---------------- 全局系统代理 ----------------
+    INTERNET_SETTINGS_KEY = r'Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+    PROXY_BYPASS = 'localhost;127.*;10.*;172.16.*;172.17.*;172.18.*;172.19.*;172.20.*;172.21.*;172.22.*;172.23.*;172.24.*;172.25.*;172.26.*;172.27.*;172.28.*;172.29.*;172.30.*;172.31.*;192.168.*;<local>'
+
+    def _refresh_wininet(self):
+        """通知系统代理设置已变更并立即生效"""
+        try:
+            INTERNET_OPTION_SETTINGS_CHANGED = 39
+            INTERNET_OPTION_REFRESH = 37
+            ctypes.windll.wininet.InternetSetOptionW(0, INTERNET_OPTION_SETTINGS_CHANGED, 0, 0)
+            ctypes.windll.wininet.InternetSetOptionW(0, INTERNET_OPTION_REFRESH, 0, 0)
+        except Exception as e:
+            print(f"刷新系统代理设置时出错: {e}")
+
+    def _write_system_proxy(self, enable, proxy_addr=None):
+        """写入/清除 Windows 系统代理注册表设置"""
+        try:
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER, self.INTERNET_SETTINGS_KEY,
+                0, winreg.KEY_WRITE
+            )
+            if enable and proxy_addr:
+                winreg.SetValueEx(key, 'ProxyEnable', 0, winreg.REG_DWORD, 1)
+                winreg.SetValueEx(key, 'ProxyServer', 0, winreg.REG_SZ, proxy_addr)
+                winreg.SetValueEx(key, 'ProxyOverride', 0, winreg.REG_SZ, self.PROXY_BYPASS)
+            else:
+                winreg.SetValueEx(key, 'ProxyEnable', 0, winreg.REG_DWORD, 0)
+            winreg.CloseKey(key)
+            self._refresh_wininet()
+            return True
+        except Exception as e:
+            print(f"写入系统代理设置时出错: {e}")
+            return False
+
+    def enable_system_proxy(self):
+        """把当前运行的代理设为系统全局代理"""
+        if not (self.proxy_thread and hasattr(self.proxy_thread, 'http_port')):
+            return
+        port = self.proxy_thread.http_port
+        addr = f'127.0.0.1:{port}'
+        if self._write_system_proxy(True, addr):
+            self.system_proxy_active = True
+            self.status_browser.append(f"已开启全局系统代理: {addr}")
+
+    def disable_system_proxy(self):
+        """关闭系统全局代理(仅当由本程序开启时)"""
+        if self._write_system_proxy(False):
+            if self.system_proxy_active:
+                self.status_browser.append("已关闭全局系统代理")
+            self.system_proxy_active = False
+
+    def on_system_proxy_toggled(self, state):
+        """勾选框切换：立即应用或撤销系统代理"""
+        checked = self.system_proxy_checkbox.isChecked()
+        if checked:
+            # 仅在代理已运行时立即生效；否则等启动代理后自动应用
+            if self.proxy_thread:
+                self.enable_system_proxy()
+            else:
+                self.status_browser.append("已勾选全局系统代理，将在代理启动后生效")
+        else:
+            self.disable_system_proxy()
+        self.save_config()
+
+    # ---------------- TUN 模式(虚拟网卡) ----------------
+    TUN_NAME = 'ProxyByUrlTun'      # 虚拟网卡名称
+    TUN_ADDR = '198.18.0.1'         # 虚拟网卡地址(gateway)
+    TUN_MASK = '255.255.255.0'
+    TUN_DNS = '8.8.8.8'             # 通过 TUN 隧道解析的 DNS
+
+    def _run_cmd(self, args):
+        """执行一条系统命令，返回 (returncode, output)"""
+        try:
+            result = subprocess.run(
+                args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            out = result.stdout.decode('gbk', errors='ignore').strip()
+            return result.returncode, out
+        except Exception as e:
+            return -1, str(e)
+
+    def get_default_gateway(self):
+        """解析当前物理默认网关(排除 TUN 自身)"""
+        try:
+            code, out = self._run_cmd(['route', 'print', '-4', '0.0.0.0'])
+            best_gw, best_metric = None, None
+            for line in out.splitlines():
+                parts = line.split()
+                if len(parts) >= 5 and parts[0] == '0.0.0.0' and parts[1] == '0.0.0.0':
+                    gw = parts[2]
+                    if gw.lower() == 'on-link' or gw == self.TUN_ADDR:
+                        continue
+                    try:
+                        metric = int(parts[4])
+                    except ValueError:
+                        metric = 9999
+                    if best_metric is None or metric < best_metric:
+                        best_gw, best_metric = gw, metric
+            return best_gw
+        except Exception as e:
+            print(f"获取默认网关失败: {e}")
+            return None
+
+    def resolve_server_ips(self, host):
+        """把节点服务器域名解析为 IP 列表(已是 IP 则直接返回)"""
+        try:
+            socket.inet_aton(host)
+            return [host]
+        except OSError:
+            pass
+        try:
+            infos = socket.getaddrinfo(host, None, socket.AF_INET)
+            return list({info[4][0] for info in infos})
+        except Exception as e:
+            print(f"解析服务器地址失败: {e}")
+            return []
+
+    def find_tun2socks(self):
+        """定位 tun2socks.exe(与 xray 同目录)"""
+        if getattr(sys, 'frozen', False):
+            base_path = sys._MEIPASS
+        else:
+            base_path = os.path.dirname(os.path.abspath(__file__))
+        candidate = os.path.join(base_path, 'tun2socks.exe')
+        if os.path.exists(candidate):
+            return candidate, base_path
+        return None, base_path
+
+    def enable_tun(self):
+        """建立 TUN 虚拟网卡并配置路由，使全部流量走代理"""
+        try:
+            if self.tun_active:
+                return
+            if not is_admin():
+                self.status_browser.append("[TUN] 需要管理员权限，无法启用")
+                return
+            if not (self.proxy_thread and hasattr(self.proxy_thread, 'socks_port')):
+                self.status_browser.append("[TUN] 代理未运行，无法启用")
+                return
+
+            tun2socks, base_path = self.find_tun2socks()
+            if not tun2socks:
+                self.status_browser.append("[TUN] 找不到 tun2socks.exe，请放到程序目录")
+                return
+            if not os.path.exists(os.path.join(base_path, 'wintun.dll')):
+                self.status_browser.append("[TUN] 找不到 wintun.dll，请放到程序目录")
+                return
+
+            socks_port = self.proxy_thread.socks_port
+
+            # 1) 记录物理默认网关，并为代理服务器 IP 添加绕过路由(避免死循环)
+            self.saved_gateway = self.get_default_gateway()
+            if not self.saved_gateway:
+                self.status_browser.append("[TUN] 无法确定物理默认网关，已中止")
+                return
+            self.status_browser.append(f"[TUN] 物理默认网关: {self.saved_gateway}")
+
+            node = self.nodes[self.node_combo.currentIndex()] if self.nodes else None
+            server_host = node.get('host') if node else self.proxy_thread.server
+            for ip in self.resolve_server_ips(server_host):
+                self._run_cmd(['route', 'add', ip, 'mask', '255.255.255.255', self.saved_gateway, 'metric', '1'])
+                self.tun_routes.append(ip)
+                self.status_browser.append(f"[TUN] 绕过路由: {ip} -> {self.saved_gateway}")
+
+            # 2) 启动 tun2socks(输出重定向到日志文件，便于诊断)
+            self.tun_log_path = os.path.join(self.app_data_dir, 'tun2socks.log')
+            tun_cmd = [tun2socks,
+                       '-device', f'tun://{self.TUN_NAME}',
+                       '-proxy', f'socks5://127.0.0.1:{socks_port}',
+                       '-loglevel', 'info']
+            self.status_browser.append(f"[TUN] 启动: {' '.join(tun_cmd)}")
+            self._tun_log_file = open(self.tun_log_path, 'w', encoding='utf-8', errors='ignore')
+            self.tun_process = subprocess.Popen(
+                tun_cmd,
+                cwd=base_path,
+                stdout=self._tun_log_file, stderr=subprocess.STDOUT,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            self.status_browser.append("[TUN] 正在创建虚拟网卡...")
+
+            # 3) 等待网卡出现，然后配置 IP / 路由 / DNS
+            if not self._wait_for_tun_adapter(timeout=10):
+                # 若进程已退出，说明 tun2socks 启动失败
+                if self.tun_process and self.tun_process.poll() is not None:
+                    self.status_browser.append(f"[TUN] tun2socks 已退出(code={self.tun_process.returncode})")
+                else:
+                    self.status_browser.append("[TUN] 网卡未按预期名称出现，当前接口列表如下")
+                    self._dump_interfaces()
+                self._show_tun_log()
+                self.status_browser.append("[TUN] 虚拟网卡创建失败，已回滚")
+                self.disable_tun()
+                return
+
+            # 配置网卡地址
+            self._run_cmd(['netsh', 'interface', 'ip', 'set', 'address',
+                           f'name={self.TUN_NAME}', 'static', self.TUN_ADDR, self.TUN_MASK])
+            # 用两条 /1 路由覆盖默认路由(不删除原默认路由)
+            self._run_cmd(['route', 'add', '0.0.0.0', 'mask', '128.0.0.0', self.TUN_ADDR, 'metric', '1'])
+            self._run_cmd(['route', 'add', '128.0.0.0', 'mask', '128.0.0.0', self.TUN_ADDR, 'metric', '1'])
+            self.tun_routes.extend(['0.0.0.0', '128.0.0.0'])
+            # DNS 走隧道
+            self._run_cmd(['netsh', 'interface', 'ip', 'set', 'dns',
+                           f'name={self.TUN_NAME}', 'static', self.TUN_DNS])
+
+            self.tun_active = True
+            self.status_browser.append("[TUN] TUN 模式已启用，全部流量经虚拟网卡代理")
+        except Exception as e:
+            self.status_browser.append(f"[TUN] 启用失败: {e}")
+            self.disable_tun()
+
+    def _wait_for_tun_adapter(self, timeout=10):
+        """轮询等待虚拟网卡出现"""
+        for _ in range(timeout * 2):
+            code, out = self._run_cmd(['netsh', 'interface', 'ip', 'show', 'interfaces'])
+            if self.TUN_NAME in out:
+                return True
+            # tun2socks 若已退出则失败
+            if self.tun_process and self.tun_process.poll() is not None:
+                return False
+            time.sleep(0.5)
+        return False
+
+    def _show_tun_log(self):
+        """把 tun2socks 日志尾部输出到状态栏"""
+        try:
+            if getattr(self, '_tun_log_file', None):
+                try:
+                    self._tun_log_file.flush()
+                except Exception:
+                    pass
+            with open(self.tun_log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                lines = f.readlines()
+            if not lines:
+                self.status_browser.append("[tun2socks] (无输出)")
+            for ln in lines[-20:]:
+                self.status_browser.append(f"[tun2socks] {ln.rstrip()}")
+        except Exception as e:
+            print(f"读取 tun2socks 日志失败: {e}")
+
+    def _dump_interfaces(self):
+        """把当前网络接口列表输出到状态栏"""
+        try:
+            code, out = self._run_cmd(['netsh', 'interface', 'ip', 'show', 'interfaces'])
+            for ln in out.splitlines():
+                if ln.strip():
+                    self.status_browser.append(f"[接口] {ln.rstrip()}")
+        except Exception as e:
+            print(f"读取接口列表失败: {e}")
+
+    def disable_tun(self):
+        """拆除 TUN 路由与虚拟网卡"""
+        try:
+            # 删除本程序添加的路由
+            for dest in self.tun_routes:
+                self._run_cmd(['route', 'delete', dest])
+            self.tun_routes = []
+
+            # 结束 tun2socks 进程(虚拟网卡随之消失)
+            if self.tun_process:
+                try:
+                    self.tun_process.terminate()
+                    self.tun_process.wait(timeout=3)
+                except Exception:
+                    pass
+                self.tun_process = None
+            self._run_cmd(['taskkill', '/F', '/IM', 'tun2socks.exe'])
+
+            # 关闭日志文件句柄
+            if getattr(self, '_tun_log_file', None):
+                try:
+                    self._tun_log_file.close()
+                except Exception:
+                    pass
+                self._tun_log_file = None
+
+            if self.tun_active:
+                self.status_browser.append("[TUN] TUN 模式已关闭")
+            self.tun_active = False
+            self.saved_gateway = None
+        except Exception as e:
+            print(f"关闭 TUN 时出错: {e}")
+
+    def on_tun_toggled(self, state):
+        """TUN 勾选框切换"""
+        checked = self.tun_checkbox.isChecked()
+        if checked:
+            if not is_admin():
+                reply = QMessageBox.question(
+                    self, 'TUN 模式',
+                    'TUN 模式需要管理员权限，是否以管理员身份重新启动程序？',
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
+                )
+                if reply == QMessageBox.Yes:
+                    if relaunch_as_admin():
+                        self.save_config()
+                        QApplication.instance().quit()
+                        return
+                    else:
+                        QMessageBox.warning(self, 'TUN 模式', '提权失败，无法启用 TUN')
+                # 取消勾选
+                self.tun_checkbox.blockSignals(True)
+                self.tun_checkbox.setChecked(False)
+                self.tun_checkbox.blockSignals(False)
+                return
+            if self.proxy_thread:
+                self.enable_tun()
+            else:
+                self.status_browser.append("[TUN] 已勾选，将在代理启动后生效")
+        else:
+            self.disable_tun()
+        self.save_config()
+
+    # ---------------- 局域网访问 ----------------
+    FIREWALL_RULE_NAME = 'ProxyByUrl LAN'
+
+    def get_lan_ip(self):
+        """获取本机在局域网中的 IP"""
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(('8.8.8.8', 80))  # 不会真正发包，只为确定出口网卡
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except Exception:
+            return '127.0.0.1'
+
+    def add_lan_firewall_rule(self):
+        """为 xray.exe 添加入站放行规则(需要管理员，best-effort)"""
+        try:
+            xray_path = os.path.join(self.app_data_dir, 'xray.exe')
+            # 先删除同名旧规则避免重复
+            self._run_cmd(['netsh', 'advfirewall', 'firewall', 'delete', 'rule',
+                           f'name={self.FIREWALL_RULE_NAME}'])
+            code, out = self._run_cmd([
+                'netsh', 'advfirewall', 'firewall', 'add', 'rule',
+                f'name={self.FIREWALL_RULE_NAME}', 'dir=in', 'action=allow',
+                f'program={xray_path}', 'enable=yes', 'profile=private'
+            ])
+            if code == 0:
+                self.status_browser.append("[LAN] 已添加防火墙放行规则")
+            else:
+                self.status_browser.append("[LAN] 防火墙规则添加失败(可能需管理员权限)，"
+                                           "若其它设备连不上，请在防火墙手动放行或允许弹窗")
+        except Exception as e:
+            print(f"添加防火墙规则失败: {e}")
+
+    def remove_lan_firewall_rule(self):
+        """移除入站放行规则"""
+        try:
+            self._run_cmd(['netsh', 'advfirewall', 'firewall', 'delete', 'rule',
+                           f'name={self.FIREWALL_RULE_NAME}'])
+        except Exception as e:
+            print(f"移除防火墙规则失败: {e}")
+
+    def show_lan_address(self):
+        """在状态栏显示局域网访问地址"""
+        try:
+            if self.proxy_thread and hasattr(self.proxy_thread, 'http_port'):
+                ip = self.get_lan_ip()
+                port = self.proxy_thread.http_port
+                self.status_browser.append(f"[LAN] 局域网设备请设置 HTTP 代理为: {ip}:{port}")
+        except Exception as e:
+            print(f"显示局域网地址失败: {e}")
+
+    def on_lan_toggled(self, state):
+        """局域网访问勾选框切换"""
+        checked = self.lan_checkbox.isChecked()
+        if checked:
+            self.add_lan_firewall_rule()
+            if self.proxy_thread:
+                # 需要重新生成配置以改变监听地址
+                self.status_browser.append("[LAN] 正在重启代理以应用局域网监听...")
+                self.restart_proxy()
+            else:
+                self.status_browser.append("[LAN] 已勾选，将在代理启动后生效")
+        else:
+            self.remove_lan_firewall_rule()
+            if self.proxy_thread:
+                self.status_browser.append("[LAN] 已关闭，正在重启代理仅监听本机...")
+                self.restart_proxy()
+        self.save_config()
+
+    def eventFilter(self, source, event):
+        """捕获下拉列表中点击 ✕ 的事件以删除对应节点"""
+        try:
+            view = self.node_combo.view()
+            if source is view.viewport() and event.type() == QEvent.MouseButtonPress:
+                index = view.indexAt(event.pos())
+                if index.isValid():
+                    rect = view.visualRect(index)
+                    if event.pos().x() >= rect.right() - NodeDeleteDelegate.BUTTON_WIDTH:
+                        self.delete_node(index.row())
+                        return True  # 消费事件，避免误选中该项
+        except Exception as e:
+            print(f"处理下拉列表点击事件时出错: {e}")
+        return super().eventFilter(source, event)
+
+    def delete_node(self, row):
+        """删除当前订阅中指定位置的节点"""
+        try:
+            self.node_combo.hidePopup()
+            sub = self.current_subscription()
+            if sub is None:
+                return
+            nodes = sub.get('nodes', [])
+            if not (0 <= row < len(nodes)):
+                return
+
+            remark = nodes[row].get('remark', '')
+            reply = QMessageBox.question(
+                self, '删除节点', f'确定要删除节点"{remark}"吗？',
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+            del nodes[row]
+            self.load_current_subscription_nodes()
+            self.save_config()
+            self.status_browser.append(f"已删除节点: {remark}")
+        except Exception as e:
+            print(f"删除节点时出错: {e}")
+
+    def node_to_link(self, node):
+        """把节点字典还原成分享链接(ss:// / trojan:// / vmess://)"""
+        try:
+            ntype = node.get('type', 'trojan')
+            host = node.get('host', '')
+            port = node.get('port', '')
+            remark = quote(node.get('remark', '') or '')
+
+            if ntype == 'shadowsocks':
+                method = node.get('method', '')
+                pwd = node.get('password', '')
+                userinfo = base64.urlsafe_b64encode(
+                    f"{method}:{pwd}".encode('utf-8')
+                ).decode('utf-8').rstrip('=')
+                return f"ss://{userinfo}@{host}:{port}#{remark}"
+
+            elif ntype == 'vmess':
+                obj = {
+                    "v": "2",
+                    "ps": node.get('remark', ''),
+                    "add": host,
+                    "port": str(port),
+                    "id": node.get('password', ''),
+                    "aid": "0",
+                    "scy": "auto",
+                    "net": "tcp",
+                    "type": "none",
+                    "host": "",
+                    "path": "",
+                    "tls": "",
+                    "sni": node.get('sni', '')
+                }
+                raw = json.dumps(obj, ensure_ascii=False).encode('utf-8')
+                return "vmess://" + base64.b64encode(raw).decode('utf-8')
+
+            else:  # trojan
+                link = f"trojan://{node.get('password', '')}@{host}:{port}"
+                sni = node.get('sni')
+                if sni:
+                    link += f"?sni={sni}"
+                link += f"#{remark}"
+                return link
+
+        except Exception as e:
+            print(f"生成分享链接失败: {e}")
+            return None
+
+    def share_to_clipboard(self):
+        """把当前选中的节点复制到剪贴板"""
+        try:
+            index = self.node_combo.currentIndex()
+            if index < 0 or not self.nodes or index >= len(self.nodes):
+                QMessageBox.information(self, '分享节点', '请先选择一个节点')
+                return
+
+            node = self.nodes[index]
+            link = self.node_to_link(node)
+            if not link:
+                QMessageBox.warning(self, '分享节点', '该节点类型暂不支持分享')
+                return
+
+            QApplication.clipboard().setText(link)
+            self.status_browser.append(f"已复制节点链接到剪贴板: {node.get('remark', '')}")
+            if hasattr(self, 'tray_icon'):
+                self.tray_icon.showMessage(
+                    '分享节点', f"已复制到剪贴板:\n{node.get('remark', '')}",
+                    QSystemTrayIcon.Information, 2000
+                )
+        except Exception as e:
+            print(f"分享节点时出错: {e}")
+
+    def get_manual_subscription_index(self):
+        """获取(必要时创建)用于手动导入的订阅，返回其索引"""
+        for i, s in enumerate(self.subscriptions):
+            if s.get('manual'):
+                return i
+        self.subscriptions.append({
+            'name': '手动导入',
+            'url': '',
+            'nodes': [],
+            'node_index': 0,
+            'manual': True
+        })
+        return len(self.subscriptions) - 1
+
+    def import_from_clipboard(self):
+        """从剪贴板解析 ss:// / trojan:// / vmess:// 链接并导入"""
+        try:
+            text = QApplication.clipboard().text().strip()
+            if not text:
+                QMessageBox.information(self, '从剪贴板导入', '剪贴板为空')
+                return
+
+            # 复用 FetchThread 的解析逻辑(逐行识别链接前缀)
+            parser = FetchThread('')
+            new_nodes = parser.parse_nodes(text)
+
+            if not new_nodes:
+                QMessageBox.information(
+                    self, '从剪贴板导入',
+                    '未在剪贴板中找到有效的 ss:// 或 trojan:// 链接'
+                )
+                return
+
+            # 把节点追加到"手动导入"订阅
+            sub_index = self.get_manual_subscription_index()
+            self.subscriptions[sub_index].setdefault('nodes', []).extend(new_nodes)
+            self.current_sub_index = sub_index
+
+            self.refresh_sub_combo()
+            self.load_current_subscription_nodes()
+            # 选中最后导入的节点
+            self.node_combo.setCurrentIndex(self.node_combo.count() - 1)
+            self.save_config()
+
+            self.status_browser.append(f"已从剪贴板导入 {len(new_nodes)} 个节点")
+            QMessageBox.information(
+                self, '从剪贴板导入', f'成功导入 {len(new_nodes)} 个节点'
+            )
+        except Exception as e:
+            print(f"从剪贴板导入时出错: {e}")
+            QMessageBox.warning(self, '从剪贴板导入', f'导入失败: {e}')
 
     def setup_firewall_rules(self):
         """配置防火墙规则 - 已禁用，Windows 会在首次运行时自动弹出提示"""
@@ -1030,6 +1958,13 @@ class TrojanUrlViewer(QWidget):
 
 def main():
     try:
+        # 设置独立的 AppUserModelID，让任务栏使用本程序图标而非 Python 图标
+        if sys.platform == 'win32':
+            try:
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('ProxyByUrl.App')
+            except Exception as e:
+                print(f"设置 AppUserModelID 失败: {e}")
+
         app = QApplication(sys.argv)
         
         # 添加全局样式表设置
