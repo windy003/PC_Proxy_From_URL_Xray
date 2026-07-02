@@ -31,6 +31,10 @@ import winreg
 import ctypes
 import random
 
+# 版本(日期)号，显示在窗口标题
+APP_VERSION = '2026/7/2-1'
+
+
 def get_resource_path(name):
     """获取资源文件路径(兼容 PyInstaller 打包与源码运行)"""
     if getattr(sys, 'frozen', False):
@@ -880,7 +884,7 @@ class TrojanUrlViewer(QWidget):
             print(f"更新进度时发生错误: {str(e)}")
 
     def initUI(self):
-        self.setWindowTitle('ProxyByUrl - 2026/7/2-1')  # 修改这行，添加版本信息
+        self.setWindowTitle(f'ProxyByUrl - {APP_VERSION}')  # 版本号见文件开头的 APP_VERSION
         # 移除全屏显示
         # self.showFullScreen()  # 删除这行
         
