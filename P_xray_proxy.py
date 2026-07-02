@@ -32,7 +32,7 @@ import ctypes
 import random
 
 # 版本(日期)号，显示在窗口标题
-APP_VERSION = '2026/7/2-1'
+APP_VERSION = '2026/7/2-2'
 
 
 def get_resource_path(name):
