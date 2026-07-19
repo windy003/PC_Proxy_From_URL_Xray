@@ -34,7 +34,7 @@ import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 版本(日期)号，显示在窗口标题
-APP_VERSION = '2026/7/2-2'
+APP_VERSION = '2026/7/19-1'
 
 
 def get_resource_path(name):
