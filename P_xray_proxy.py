@@ -1,4 +1,4 @@
-#  pyinstaller --noconfirm --onefile --windowed --icon=256x256.ico --add-data "256x256.ico;."   --add-data "icon.png;." --add-data "xray.exe;."   --add-binary "tun2socks.exe;."  --add-binary "wintun.dll;." P_xray_proxy.py   --name  "proxyByUrl"
+# & "D:\files\using\Python\PC_Proxy_From_URL_Xray\.venv\Scripts\python.exe" -m   PyInstaller --noconfirm --onefile --windowed --icon=256x256.ico --add-data "256x256.ico;."   --add-data "icon.png;." --add-data "xray.exe;."   --add-binary "tun2socks.exe;."  --add-binary "wintun.dll;." P_xray_proxy.py   --name  "proxyByUrl"
 
 # ------------------------------------------------
 # self.app_config_file = os.path.join(self.app_data_dir, 'app_config.json')
@@ -30,6 +30,8 @@ from PyQt5.QtGui import QKeySequence
 import winreg
 import ctypes
 import random
+import shutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 版本(日期)号，显示在窗口标题
 APP_VERSION = '2026/7/2-2'
@@ -459,7 +461,7 @@ class ProxyThread(QThread):
                 ],
                 "outbounds": [outbound],
                 "log": {
-                    "loglevel": "info"
+                    "loglevel": "warning"
                 }
             }
             
@@ -527,11 +529,208 @@ class ProxyThread(QThread):
             self.process = None
             
         try:
-            subprocess.run(['taskkill', '/F', '/IM', 'xray.exe'], 
-                         stdout=subprocess.PIPE, 
+            subprocess.run(['taskkill', '/F', '/IM', 'xray.exe'],
+                         stdout=subprocess.PIPE,
                          stderr=subprocess.PIPE)
         except Exception as e:
             print(f"清理残留程时出错: {e}")
+
+
+def build_test_outbound(node):
+    """根据节点字典构建 xray outbound(与 ProxyThread.run 中逻辑保持一致)"""
+    node_type = node.get('type', 'trojan')
+    server = node.get('host', '')
+    port = int(node.get('port', 0))
+    if node_type == 'shadowsocks':
+        return {
+            "protocol": "shadowsocks",
+            "settings": {
+                "servers": [{
+                    "address": server,
+                    "port": port,
+                    "method": node.get('method'),
+                    "password": node.get('password')
+                }]
+            }
+        }
+    elif node_type == 'vmess':
+        return {
+            "protocol": "vmess",
+            "settings": {
+                "vnext": [{
+                    "address": server,
+                    "port": port,
+                    "users": [{
+                        "id": node.get('password'),
+                        "alterId": 0,
+                        "security": "auto"
+                    }]
+                }]
+            }
+        }
+    else:
+        # 默认按 trojan 处理
+        sni = node.get('sni') or server
+        return {
+            "protocol": "trojan",
+            "settings": {
+                "servers": [{
+                    "address": server,
+                    "port": port,
+                    "password": node.get('password')
+                }]
+            },
+            "streamSettings": {
+                "network": "tcp",
+                "security": "tls",
+                "tlsSettings": {
+                    "allowInsecure": True,
+                    "serverName": sni
+                }
+            }
+        }
+
+
+def get_free_port():
+    """让操作系统分配一个空闲的本地端口"""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('127.0.0.1', 0))
+        return s.getsockname()[1]
+
+
+class SpeedTestThread(QThread):
+    """并发测试当前订阅下所有节点的真实延迟(毫秒)
+
+    对每个节点单独启动一个仅含本地 HTTP 入站 + 该节点出站的 xray 实例，
+    通过该本地代理请求测速 URL 并测量往返耗时。
+    latency 语义: >=0 为毫秒数; -1 表示超时/连接失败; -2 表示启动/配置失败。
+    """
+    result = pyqtSignal(int, int)   # (节点索引, 延迟毫秒 / 负数错误码)
+    progress = pyqtSignal(str)      # 进度文本
+    test_finished = pyqtSignal()    # 全部测试结束
+
+    TEST_URL = 'http://www.gstatic.com/generate_204'
+
+    def __init__(self, nodes, xray_path, app_data_dir,
+                 timeout=5, concurrency=5):
+        super().__init__()
+        self.nodes = nodes
+        self.xray_path = xray_path
+        self.app_data_dir = app_data_dir
+        self.timeout = timeout
+        self.concurrency = concurrency
+        self._stop = False
+        self._done = 0
+        self._total = len(nodes)
+
+    def stop(self):
+        self._stop = True
+
+    def _wait_port_ready(self, port, deadline):
+        """等待本地端口开始监听，成功返回 True"""
+        while time.time() < deadline:
+            if self._stop:
+                return False
+            try:
+                with socket.create_connection(('127.0.0.1', port), timeout=0.5):
+                    return True
+            except OSError:
+                time.sleep(0.1)
+        return False
+
+    def _test_one(self, index, node):
+        if self._stop:
+            return index, -2
+        port = get_free_port()
+        cfg_path = os.path.join(self.app_data_dir, f'speedtest_{index}_{port}.json')
+        proc = None
+        try:
+            config = {
+                "inbounds": [{
+                    "tag": "http-in",
+                    "port": port,
+                    "listen": "127.0.0.1",
+                    "protocol": "http"
+                }],
+                "outbounds": [build_test_outbound(node)],
+                "log": {"loglevel": "none"}
+            }
+            with open(cfg_path, 'w', encoding='utf-8') as f:
+                json.dump(config, f)
+
+            proc = subprocess.Popen(
+                [self.xray_path, "run", "-c", cfg_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+
+            # 等待 xray 本地入站端口就绪(最多 4 秒)
+            if not self._wait_port_ready(port, time.time() + 4):
+                return index, -2
+
+            if self._stop:
+                return index, -2
+
+            proxies = {
+                'http': f'http://127.0.0.1:{port}',
+                'https': f'http://127.0.0.1:{port}'
+            }
+            start = time.perf_counter()
+            resp = requests.get(
+                self.TEST_URL,
+                proxies=proxies,
+                timeout=self.timeout,
+                verify=False
+            )
+            latency = int((time.perf_counter() - start) * 1000)
+            if resp.status_code in (200, 204):
+                return index, latency
+            return index, -1
+        except requests.exceptions.RequestException:
+            return index, -1
+        except Exception as e:
+            print(f"测试节点 {index} 出错: {e}")
+            return index, -2
+        finally:
+            if proc is not None:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=3)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+            try:
+                if os.path.exists(cfg_path):
+                    os.remove(cfg_path)
+            except Exception:
+                pass
+
+    def run(self):
+        try:
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            with ThreadPoolExecutor(max_workers=self.concurrency) as executor:
+                futures = {
+                    executor.submit(self._test_one, i, node): i
+                    for i, node in enumerate(self.nodes)
+                }
+                for future in as_completed(futures):
+                    if self._stop:
+                        break
+                    try:
+                        index, latency = future.result()
+                    except Exception:
+                        index, latency = futures[future], -2
+                    self._done += 1
+                    self.result.emit(index, latency)
+                    self.progress.emit(f"测试进度: {self._done}/{self._total}")
+        except Exception as e:
+            self.progress.emit(f"测速线程错误: {str(e)}")
+        finally:
+            self.test_finished.emit()
+
 
 class NodeDeleteDelegate(QStyledItemDelegate):
     """为下拉列表每一项在右侧绘制一个删除按钮 ✕"""
@@ -563,6 +762,8 @@ class TrojanUrlViewer(QWidget):
         # 基本属性初始化
         self.fetch_thread = None
         self.proxy_thread = None
+        self.speedtest_thread = None   # 延迟测试线程
+        self.speed_results = {}        # {节点索引: 延迟毫秒/错误码}
         self.nodes = []
         # 多订阅支持
         self.subscriptions = []      # [{'name','url','nodes':[...],'node_index':int}]
@@ -704,6 +905,11 @@ class TrojanUrlViewer(QWidget):
     def on_sub_changed(self, index):
         """切换订阅时更新显示的节点"""
         if 0 <= index < len(self.subscriptions):
+            # 切换订阅会使正在进行的延迟测试节点索引失效，先停止它
+            if self.speedtest_thread and self.speedtest_thread.isRunning():
+                self.speedtest_thread.stop()
+                self.speedtest_thread.wait()
+            self.speed_results = {}
             self.current_sub_index = index
             self.load_current_subscription_nodes()
             self.save_config()
@@ -953,10 +1159,14 @@ class TrojanUrlViewer(QWidget):
         self.share_button.clicked.connect(self.share_to_clipboard)
         self.import_button = QPushButton('从剪贴板导入(&I)')  # 从剪贴板解析链接导入节点
         self.import_button.clicked.connect(self.import_from_clipboard)
+        self.speedtest_button = QPushButton('测试延迟(&M)')   # 测试当前订阅所有节点的延迟
+        self.speedtest_button.setToolTip('依次为每个节点启动临时代理并测量真实往返毫秒数')
+        self.speedtest_button.clicked.connect(self.start_speed_test)
         node_layout.addWidget(node_label)
         node_layout.addWidget(self.node_combo)
         node_layout.addWidget(self.share_button)
         node_layout.addWidget(self.import_button)
+        node_layout.addWidget(self.speedtest_button)
         node_layout.addStretch()
         layout.addLayout(node_layout)
         
@@ -1013,7 +1223,9 @@ class TrojanUrlViewer(QWidget):
         self.status_label = QLabel('代理状态：未运行')
         self.status_browser = QTextBrowser()
         self.status_browser.setMaximumHeight(150)
-        
+        # 限制日志文本上限，避免长时间运行时文档无限增长拖垮界面(导致托盘无法唤出)
+        self.status_browser.document().setMaximumBlockCount(500)
+
         # 添加状态区域的全屏切换按钮
         status_header_layout = QHBoxLayout()
         status_header_layout.addWidget(self.status_label)
@@ -1152,8 +1364,40 @@ class TrojanUrlViewer(QWidget):
 
     def tray_icon_activated(self, reason):
         """处理托盘图标的点击事件"""
-        if reason == QSystemTrayIcon.DoubleClick:
-            self.toggle_window()
+        # 单击(Trigger)与双击(DoubleClick)都强制显示并置顶，避免“切换”逻辑
+        # 在窗口被其它窗口盖住时反而把它隐藏，造成“唤不出来”的错觉。
+        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
+            self.show_main_window()
+
+    def show_main_window(self):
+        """强制把主窗口显示到前台(不做隐藏切换)"""
+        try:
+            self.setWindowState(self.windowState() & ~Qt.WindowMinimized | Qt.WindowActive)
+            self.showNormal()
+            self.show()
+            self.raise_()
+            self.activateWindow()
+            if sys.platform == 'win32':
+                try:
+                    hwnd = int(self.winId())
+                    foreground_hwnd = ctypes.windll.user32.GetForegroundWindow()
+                    foreground_thread_id = ctypes.windll.user32.GetWindowThreadProcessId(foreground_hwnd, None)
+                    current_thread_id = ctypes.windll.kernel32.GetCurrentThreadId()
+                    attached = False
+                    if foreground_thread_id != current_thread_id:
+                        attached = ctypes.windll.user32.AttachThreadInput(foreground_thread_id, current_thread_id, True)
+                    ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                    ctypes.windll.user32.BringWindowToTop(hwnd)
+                    ctypes.windll.user32.SetForegroundWindow(hwnd)
+                    ctypes.windll.user32.SetActiveWindow(hwnd)
+                    if attached:
+                        ctypes.windll.user32.AttachThreadInput(foreground_thread_id, current_thread_id, False)
+                except Exception as e:
+                    print(f"Windows 前台激活失败: {e}")
+            if hasattr(self, 'show_action'):
+                self.show_action.setText('隐藏主窗口(&S)')
+        except Exception as e:
+            print(f"显示主窗口时出错: {e}")
 
     def quit_app(self):
         """完全退出程序"""
@@ -1167,11 +1411,16 @@ class TrojanUrlViewer(QWidget):
             if self.system_proxy_active:
                 self.disable_system_proxy()
 
+            # 停止延迟测试
+            if hasattr(self, 'speedtest_thread') and self.speedtest_thread and self.speedtest_thread.isRunning():
+                self.speedtest_thread.stop()
+                self.speedtest_thread.wait()
+
             # 停止代理
             if hasattr(self, 'proxy_thread') and self.proxy_thread and self.proxy_thread.isRunning():
                 self.proxy_thread.stop()
                 self.proxy_thread.wait()
-            
+
             # 结束xray进程
             try:
                 subprocess.run(['taskkill', '/F', '/IM', 'xray.exe'], 
@@ -1331,6 +1580,131 @@ class TrojanUrlViewer(QWidget):
             )
         except Exception as e:
             print(f"更新状态时发生错误: {e}")
+
+    # ---------------- 节点延迟测试 ----------------
+    def ensure_xray_path(self):
+        """确保固定目录下存在 xray.exe，返回其路径，失败返回 None"""
+        xray_dest = os.path.join(self.app_data_dir, 'xray.exe')
+        if not os.path.exists(xray_dest):
+            if getattr(sys, 'frozen', False):
+                base_path = sys._MEIPASS
+            else:
+                base_path = os.path.dirname(os.path.abspath(__file__))
+            xray_src = os.path.join(base_path, 'xray.exe')
+            if os.path.exists(xray_src):
+                try:
+                    shutil.copy2(xray_src, xray_dest)
+                except Exception as e:
+                    print(f"复制 xray.exe 失败: {e}")
+        return xray_dest if os.path.exists(xray_dest) else None
+
+    def start_speed_test(self):
+        """开始测试当前订阅下所有节点的延迟"""
+        try:
+            # 已有测试在跑则视为停止
+            if self.speedtest_thread and self.speedtest_thread.isRunning():
+                self.speedtest_thread.stop()
+                self.speedtest_button.setText('正在停止...')
+                self.speedtest_button.setEnabled(False)
+                return
+
+            if not self.nodes:
+                self.browser.setText('当前订阅没有可测试的节点')
+                return
+
+            xray_path = self.ensure_xray_path()
+            if not xray_path:
+                self.browser.setText('找不到 xray.exe，无法测试延迟')
+                return
+
+            # 重置结果，并把下拉框每项恢复为基础名称 + “测试中”
+            self.speed_results = {}
+            self.node_combo.blockSignals(True)
+            for i, node in enumerate(self.nodes):
+                self.node_combo.setItemText(i, f"{node['remark']}  [测试中…]")
+            self.node_combo.blockSignals(False)
+
+            self.status_browser.append(f"开始测试 {len(self.nodes)} 个节点的延迟...")
+            self.browser.setText('正在测试节点延迟，请稍候...')
+            self.speedtest_button.setText('停止测试(&M)')
+
+            self.speedtest_thread = SpeedTestThread(
+                list(self.nodes), xray_path, self.app_data_dir,
+                timeout=5, concurrency=5
+            )
+            self.speedtest_thread.result.connect(self.on_speed_result)
+            self.speedtest_thread.progress.connect(self.on_speed_progress)
+            self.speedtest_thread.test_finished.connect(self.on_speed_finished)
+            self.speedtest_thread.start()
+        except Exception as e:
+            self.browser.setText(f'启动延迟测试出错: {str(e)}')
+            self.speedtest_button.setText('测试延迟(&M)')
+            self.speedtest_button.setEnabled(True)
+
+    def _latency_text(self, latency):
+        """把延迟数值转成显示文本"""
+        if latency == -1:
+            return '超时'
+        if latency == -2:
+            return '失败'
+        return f'{latency} ms'
+
+    def on_speed_result(self, index, latency):
+        """收到单个节点的测试结果"""
+        self.speed_results[index] = latency
+        if 0 <= index < len(self.nodes):
+            base = self.nodes[index]['remark']
+            self.node_combo.blockSignals(True)
+            self.node_combo.setItemText(index, f"{base}  [{self._latency_text(latency)}]")
+            self.node_combo.blockSignals(False)
+        self.render_speed_summary()
+
+    def on_speed_progress(self, message):
+        self.status_browser.append(message)
+
+    def on_speed_finished(self):
+        """全部节点测试结束"""
+        self.speedtest_button.setText('测试延迟(&M)')
+        self.speedtest_button.setEnabled(True)
+        self.status_browser.append('节点延迟测试完成')
+        self.render_speed_summary(final=True)
+
+    def render_speed_summary(self, final=False):
+        """在下方信息区渲染按延迟升序排列的结果表"""
+        rows = []
+        for i, node in enumerate(self.nodes):
+            if i in self.speed_results:
+                rows.append((i, node, self.speed_results[i]))
+        # 排序：有效毫秒在前(升序)，超时/失败排最后
+        def sort_key(item):
+            lat = item[2]
+            return (0, lat) if lat >= 0 else (1, 0)
+        rows.sort(key=sort_key)
+
+        title = '节点延迟测试结果' + ('' if final else '（测试中…）')
+        html = [
+            f'<h3>{title}</h3>',
+            '<table border="1" cellspacing="0" cellpadding="4" '
+            'style="border-collapse:collapse;">',
+            '<tr><th>排名</th><th>节点</th><th>服务器</th><th>延迟</th></tr>'
+        ]
+        for rank, (i, node, lat) in enumerate(rows, 1):
+            if lat >= 0:
+                color = '#27ae60' if lat < 500 else ('#e67e22' if lat < 1000 else '#c0392b')
+            else:
+                color = '#7f8c8d'
+            remark = str(node.get('remark', '')).replace('<', '&lt;').replace('>', '&gt;')
+            host = str(node.get('host', '')).replace('<', '&lt;').replace('>', '&gt;')
+            html.append(
+                f'<tr><td align="center">{rank}</td>'
+                f'<td>{remark}</td>'
+                f'<td>{host}:{node.get("port", "")}</td>'
+                f'<td style="color:{color};" align="right">{self._latency_text(lat)}</td></tr>'
+            )
+        html.append('</table>')
+        tested = len(rows)
+        html.append(f'<p>已测试 {tested}/{len(self.nodes)} 个节点</p>')
+        self.browser.setHtml('\n'.join(html))
 
     def on_node_changed(self, index):
         # 当节点选择改变时保存配置

@@ -1,1 +1,1 @@
-start  /b pythonw P_xray_proxy.py
+start  /b "" "D:\files\using\Python\PC_Proxy_From_URL_Xray\.venv\Scripts\pythonw.exe" P_xray_proxy.py

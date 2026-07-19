@@ -1,0 +1,4 @@
+PyQt5==5.15.11
+pyqt5_sip==12.17.1
+Requests==2.34.2
+urllib3==2.7.0
